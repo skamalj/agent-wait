@@ -13,6 +13,13 @@ You are the developer on this project. Your project manager is a Claude Cowork s
 - **GitHub**: `gh` is available. First task: `gh repo create skamalj/agent-wait --private --source=. --remote=origin --push`. Then work on branches and open PRs into `main`; conventional commits; never force-push.
 - Python 3.12 and `uv` are expected. If a tool is missing, install it and note it in the report.
 
+## Windows / local specifics — do these checks before writing code
+1. Tooling: run `python --version`, `uv --version`, `gh auth status`, `aws --version`, `node --version`, `npx cdk --version`. Install anything missing (`winget install` for Python 3.12 / Node LTS / AWS CLI / GitHub CLI; `pip install uv` or winget for uv; `npm i -g aws-cdk` for the CDK CLI). Record versions in the report.
+2. AWS profile: run `aws configure list-profiles`. If more than one, ask the owner ONCE which profile to use, then set `AWS_PROFILE` for the rest of the session. Confirm with `aws sts get-caller-identity` (do not paste the account id into any file).
+3. CDK bootstrap: `cdk bootstrap` may be required in the chosen account/region before the first deploy; run it if `cdk deploy` reports a missing bootstrap stack.
+4. Shell: you are in PowerShell. Prefer `uv run …` for all Python commands so the workspace venv is used. Keep the repo on LF line endings (`.gitattributes` with `* text=auto eol=lf`).
+5. Long-running steps (`cdk deploy`, the e2e run with its 2-minute timeouts) are expected; do not shorten timeouts below what §13 needs.
+
 ## Plan of work (suggested order; adjust and record deviations)
 1. Repo scaffold: uv workspace, three packages per REQUIREMENTS §15, ruff/pyright/pytest config, GitHub Actions running the local test levels.
 2. `agent-wait` core: model, policy, token codec, in-memory + SQLite stores, `LogAnnounce`/`InMemoryAnnounce`/`CompositeAnnounce`, `WaitRuntime.dispatch()` and `.register()` exactly per §4, sweeper. Unit + conformance tests for all 12 rules in §10 with a fake clock and crash injection.
