@@ -1,8 +1,8 @@
 """Root conftest.
 
 It puts two things on `sys.path`: the shared conformance suite, and the example
-agent that the integration and end-to-end suites drive. The twelve rules in
-REQUIREMENTS section 10 are written once and run against every store -- the two built
+agent that the integration and end-to-end suites drive. The rules in
+REQUIREMENTS section 10 (and 18.2) are written once and run against every store -- the two built
 into the core here, and `DynamoWaitStore` over moto from the AWS package. A rule that
 only ever ran against the in-memory store would not have been tested.
 """

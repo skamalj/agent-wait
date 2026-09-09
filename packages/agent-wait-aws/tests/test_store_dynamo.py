@@ -237,3 +237,40 @@ def test_find_by_status_only_returns_that_status(bad_status: str) -> None:
 
     assert store.find(status="pending") == []
     assert len(store.find(status=bad_status)) == 1  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- pagination
+def test_find_follows_every_page() -> None:
+    """DynamoDB caps a response at 1 MB, so one call is a page, not an answer. A wait the
+    sweeper never sees is a thread parked forever."""
+    store = make_dynamo_store()
+    for index in range(12):
+        store.create(
+            a_wait(
+                wait_id=f"01JWAIT000000000000000{index:03d}",
+                idempotency_key=f"idem-{index}",
+                created_at=1_760_000_000.0 + index,
+            )
+        )
+
+    real_query = store.table.query
+    pages: list[int] = []
+
+    def one_item_at_a_time(**kwargs: object) -> dict[str, object]:
+        response = real_query(**{**kwargs, "Limit": 1})
+        pages.append(1)
+        return response
+
+    store.table.query = one_item_at_a_time  # type: ignore[method-assign]
+    found = store.find(thread_id="order-4471")
+
+    assert len(found) == 12, f"only {len(found)} of 12 waits survived pagination"
+    assert len(pages) > 1, "the test did not actually force more than one page"
+
+
+def test_find_stops_once_the_limit_is_satisfied() -> None:
+    store = make_dynamo_store()
+    for index in range(6):
+        store.create(a_wait(wait_id=f"01JWAIT00000000000000A{index:02d}", idempotency_key=f"k-{index}"))
+
+    assert len(store.find(thread_id="order-4471", limit=2)) == 2

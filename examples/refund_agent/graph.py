@@ -62,6 +62,11 @@ def review(state: RefundState) -> RefundState:
         policy=WaitPolicy(
             timeout=DEMO_TIMEOUT,
             on_timeout="resume_default",
+            # REQUIREMENTS section 13 specifies this default verbatim. Note what section
+            # 18.1 does to it: on a timeout the graph receives `action="timeout"`, not
+            # `"reject"` -- the field records *how* the wait was settled, and the other
+            # keys survive. Which is why `route()` below tests for the positive case
+            # (`== "approve"`) rather than enumerating the ways a refund can be refused.
             default={"action": "reject", "reason": f"no response within {DEMO_TIMEOUT}"},
             allowed_actions=("approve", "reject"),
             tags={"approver_group": "finance"},
@@ -72,7 +77,29 @@ def review(state: RefundState) -> RefundState:
 
 def issue_refund(state: RefundState) -> RefundState:
     PAYMENTS_CALLED.append(state["order_id"])  # <- the irreversible call
+    _record_refund(state["order_id"])
     return {"status": "refunded"}
+
+
+def _record_refund(order_id: str) -> None:
+    """Mirror the side effect into DynamoDB when deployed, so the end-to-end run can
+    assert on it.
+
+    An in-memory list proves nothing about a Lambda you are not inside. The update is a
+    deliberate unconditional `ADD calls 1`: if the node ever ran twice, the counter says
+    2, which is exactly the failure the whole library exists to prevent.
+    """
+    table_name = os.environ.get("AGENT_WAIT_SIDE_EFFECT_TABLE")
+    if not table_name:
+        return
+    import boto3
+
+    boto3.resource("dynamodb").Table(table_name).update_item(
+        Key={"pk": f"REFUND#{order_id}", "sk": "#"},
+        UpdateExpression="ADD #calls :one",
+        ExpressionAttributeNames={"#calls": "calls"},
+        ExpressionAttributeValues={":one": 1},
+    )
 
 
 def notify_customer(state: RefundState) -> RefundState:

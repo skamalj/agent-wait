@@ -15,7 +15,15 @@ from typing import Any
 
 import boto3
 import pytest
-from agent_wait import EntryPoint, FakeClock, InMemoryAnnounce, StaticKeyProvider, TokenCodec, WaitRuntime
+from agent_wait import (
+    EntryPoint,
+    FakeClock,
+    Ignore,
+    InMemoryAnnounce,
+    StaticKeyProvider,
+    TokenCodec,
+    WaitRuntime,
+)
 from agent_wait_aws import (
     SchedulerAnnounce,
     SqsAnnounce,
@@ -141,7 +149,15 @@ def test_a_redelivered_answer_is_acknowledged_not_retried() -> None:
 def test_a_forged_token_is_acknowledged() -> None:
     agent = Agent()
     agent.handler(agent.event(START_BODY), None)
-    forged = {"token": agent.token()[:-1] + "Z", "action": "approve", "answer_id": "evil"}
+    token = agent.token()
+    # Flip the last character to something it is not. `token[:-1] + "Z"` is not a forgery
+    # when the MAC already ends in "Z" -- which base64url does about one run in 64, and
+    # the "forged" token is then perfectly valid and the refund goes out.
+    forged = {
+        "token": token[:-1] + ("A" if token[-1] != "A" else "B"),
+        "action": "approve",
+        "answer_id": "evil",
+    }
 
     result = agent.handler(agent.event(forged), None)
 
@@ -362,3 +378,127 @@ def test_the_sweep_handler_repairs_an_unannounced_wait() -> None:
 
     assert counts["announced"] == 1
     assert agent.store.get(wait.wait_id).notified_at is not None
+
+
+# ================================ section 18.3: register() runs whatever happens
+def test_a_raising_graph_still_releases_the_thread_lease() -> None:
+    """§18.3. `register()` is what releases the lease. Skip it when a graph raises and the
+    lease stays held for its full fifteen minutes, so every redelivery bounces off
+    `lease_held` until it expires -- a transient model error would look like a stuck
+    thread."""
+    agent = Agent()
+
+    class Exploding:
+        def invoke(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("the model provider is down")
+
+        def get_state(self, *args: Any, **kwargs: Any) -> Any:
+            return agent.graph.get_state(*args, **kwargs)
+
+    handler = make_run_handler(Exploding(), agent.runtime, heartbeat=False)
+
+    result = handler(agent.event(START_BODY, message_ids=["sqs-boom"]), None)
+
+    assert result == {"batchItemFailures": [{"itemIdentifier": "sqs-boom"}]}
+    assert agent.store.get_lease("order-4471") is None, "the lease must not outlive the failure"
+
+
+def test_the_redelivery_after_a_raising_graph_can_take_the_lease() -> None:
+    """The point of releasing it: another worker has to be able to run the thread."""
+    agent = Agent()
+
+    class Exploding:
+        def invoke(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("transient")
+
+        def get_state(self, *args: Any, **kwargs: Any) -> Any:
+            return agent.graph.get_state(*args, **kwargs)
+
+    make_run_handler(Exploding(), agent.runtime, heartbeat=False)(
+        agent.event(START_BODY, message_ids=["sqs-retry"]), None
+    )
+
+    other = WaitRuntime(
+        adapter=LangGraphAdapter(agent.graph),
+        store=agent.store,
+        tokens=TokenCodec(KEYS, clock=agent.clock),
+        announce=[],
+        entry_point=EntryPoint("sqs", agent.queue_url),
+        clock=agent.clock,
+        owner="worker-b",
+    )
+
+    assert not isinstance(
+        other.dispatch({"thread_id": "order-4471", "input": {}, "message_id": "m2"}), Ignore
+    ), "a lease held by a dead invocation would block every redelivery for 15 minutes"
+
+
+def test_known_gap_a_first_message_that_crashes_replays_with_no_input() -> None:
+    """A defect this ruling surfaced, pinned so it is not lost.
+
+    `dispatch()` records a start message as applied *before* the graph consumes it. If
+    the very first run then crashes, no checkpoint exists, and the redelivery -- correctly
+    recognised as a replay -- invokes with `input=None`, which LangGraph refuses with
+    `EmptyInputError` because the thread has no state to resume from.
+
+    Every later message is fine: by then a checkpoint exists and replaying with None is
+    exactly right. Reported in TEST_REPORT as an open question; the candidate fix is to
+    record the message in `register()` rather than `dispatch()`, so a run that never
+    completed never counts as applied.
+    """
+    from langgraph.errors import EmptyInputError
+
+    agent = Agent()
+    calls = {"n": 0}
+
+    class FlakyOnce:
+        def invoke(self, *args: Any, **kwargs: Any) -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient")
+            return agent.graph.invoke(*args, **kwargs)
+
+        def get_state(self, *args: Any, **kwargs: Any) -> Any:
+            return agent.graph.get_state(*args, **kwargs)
+
+    handler = make_run_handler(FlakyOnce(), agent.runtime, heartbeat=False)
+    event = agent.event(START_BODY, message_ids=["sqs-retry"])
+
+    first = handler(event, None)
+    second = handler(event, None)
+
+    assert first == {"batchItemFailures": [{"itemIdentifier": "sqs-retry"}]}
+    # The retry is reported as a failure too -- but for the wrong reason.
+    assert second == {"batchItemFailures": [{"itemIdentifier": "sqs-retry"}]}
+    with pytest.raises(EmptyInputError):
+        agent.graph.invoke(None, agent.runtime.adapter.config_for("order-4471"))
+    assert agent.store.get_lease("order-4471") is None, "the lease is still released each time"
+
+
+def test_a_raising_graph_does_not_falsely_finalise_a_wait() -> None:
+    """Registering an empty result on the error path is safe: `extract()` finds no
+    interrupts, so `register()` only finalises waits the thread has demonstrably moved
+    past -- and a graph that just raised has not moved past anything."""
+    agent = Agent()
+    agent.handler(agent.event(START_BODY, message_ids=["sqs-start"]), None)
+    wait = agent.store.find(thread_id="order-4471")[0]
+    agent.handler(agent.event(agent.answer()), None)
+    assert agent.store.get(wait.wait_id).status == "resumed"
+
+    second = Agent()
+    second.handler(second.event(START_BODY, message_ids=["s"]), None)
+    parked = second.store.find(thread_id="order-4471")[0]
+
+    class Exploding:
+        def invoke(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("boom")
+
+        def get_state(self, *args: Any, **kwargs: Any) -> Any:
+            return second.graph.get_state(*args, **kwargs)
+
+    handler = make_run_handler(Exploding(), second.runtime, heartbeat=False)
+    handler(second.event(second.answer(), message_ids=["a"]), None)
+
+    settled = second.store.get(parked.wait_id)
+    assert settled.status == "answered", "answered, not resumed: the graph never advanced"
+    assert second.store.get_lease("order-4471") is None

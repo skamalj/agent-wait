@@ -209,10 +209,14 @@ class DynamoWaitStore:
         else:
             # An unindexed query. The table also holds leases, markers and parked
             # answers, so the prefix filter is what keeps them out of `Wait.from_dict`.
-            items = self.table.scan(
-                FilterExpression="begins_with(pk, :prefix)",
-                ExpressionAttributeValues={":prefix": "WAIT#"},
-            ).get("Items", [])
+            items = self._paginate(
+                self.table.scan,
+                {
+                    "FilterExpression": "begins_with(pk, :prefix)",
+                    "ExpressionAttributeValues": {":prefix": "WAIT#"},
+                },
+                limit=None,
+            )
 
         waits = [self._from_item(item) for item in items]
         if status is not None:
@@ -227,14 +231,40 @@ class DynamoWaitStore:
     def _query_index(
         self, index: str, expression: str, values: Mapping[str, Any], *, limit: int | None
     ) -> list[Any]:
-        kwargs: dict[str, Any] = {
-            "IndexName": index,
-            "KeyConditionExpression": expression,
-            "ExpressionAttributeValues": dict(values),
-        }
+        return self._paginate(
+            self.table.query,
+            {
+                "IndexName": index,
+                "KeyConditionExpression": expression,
+                "ExpressionAttributeValues": dict(values),
+            },
+            limit=limit,
+        )
+
+    @staticmethod
+    def _paginate(
+        operation: Any, kwargs: Mapping[str, Any], *, limit: int | None, max_pages: int = 100
+    ) -> list[Any]:
+        """Follow `LastEvaluatedKey`.
+
+        DynamoDB caps a response at 1 MB, so a single call is a *page*, not an answer.
+        Reading only the first one would quietly hide waits from the sweeper -- and a
+        wait the sweeper never sees is a thread parked forever, which is precisely the
+        failure this library exists to prevent. Silent truncation is the worst possible
+        way to lose one.
+        """
+        collected: list[Any] = []
+        request = dict(kwargs)
         if limit is not None:
-            kwargs["Limit"] = limit
-        return self.table.query(**kwargs).get("Items", [])
+            request["Limit"] = limit
+        for _ in range(max_pages):
+            response = operation(**request)
+            collected.extend(response.get("Items", []))
+            cursor = response.get("LastEvaluatedKey")
+            if not cursor or (limit is not None and len(collected) >= limit):
+                break
+            request["ExclusiveStartKey"] = cursor
+        return collected
 
     def transition(self, wait_id: str, *, expect: Status, to: Status, **fields: Any) -> bool:
         """The primitive the whole design rests on. One `UpdateItem`, no prior read."""

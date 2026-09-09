@@ -20,6 +20,11 @@ What the wrapper is actually responsible for (REQUIREMENTS section 9.3):
   slowly. Nacking those is how a healthy queue turns into a DLQ full of duplicates.
 * **The immediate-resume loop.** A parked answer can make `register()` hand back a resume
   to apply straight away, so the handler loops rather than waiting for another message.
+* **`register()` runs whatever happens** (REQUIREMENTS section 18.3). It is what releases
+  the thread lease, so it goes in a `finally`. Skip it when a graph raises and the lease
+  outlives the invocation that took it -- every redelivery of that thread then bounces off
+  `lease_held` until the lease expires, and a transient model error looks like a
+  permanently stuck thread.
 """
 
 from __future__ import annotations
@@ -135,8 +140,7 @@ def make_run_handler(
             runtime=runtime,
             thread_id=outcome.thread_id,
         ):
-            result = _invoke(outcome)
-            registered = runtime.register(result, outcome.config, outcome.thread_id)
+            registered = _run_and_register(outcome.config, outcome.thread_id, lambda: _invoke(outcome))
             _drain(registered)
         return False
 
@@ -145,12 +149,34 @@ def make_run_handler(
             return graph.invoke(outcome.input, outcome.config)
         return graph.invoke(outcome.command, outcome.config)
 
+    def _run_and_register(config: Any, thread_id: str, invoke: Callable[[], Any]) -> RegisterResult:
+        """Invoke the graph, and call `register()` **whatever happens** (section 18.3).
+
+        `register()` is what releases the thread lease. If a graph raises -- a model
+        timeout, a bad tool call -- and we skipped it, the lease would stay held for its
+        full fifteen minutes and every redelivery of this message would bounce off
+        `lease_held` until it expired. The failure would look like a stuck thread rather
+        than the transient error it was.
+
+        Registering an empty result is safe on the error path: `extract()` finds no
+        interrupts, so `register()` only finalises waits the thread has *demonstrably*
+        moved past -- and a graph that just raised has not moved past anything. The
+        original exception then propagates and SQS redelivers.
+        """
+        result: Any = {}
+        try:
+            result = invoke()
+        finally:
+            registered = runtime.register(result, config, thread_id)
+        return registered
+
     def _drain(registered: RegisterResult) -> None:
         while registered.immediate_resume is not None:
             resume = registered.immediate_resume
             _log.info("applying a parked answer for wait %s", resume.wait.wait_id)
-            result = graph.invoke(resume.command, resume.config)
-            registered = runtime.register(result, resume.config, resume.thread_id)
+            registered = _run_and_register(
+                resume.config, resume.thread_id, lambda r=resume: graph.invoke(r.command, r.config)
+            )
 
     def _queue_url_for(record: Mapping[str, Any]) -> str:
         source = record.get("eventSourceARN")

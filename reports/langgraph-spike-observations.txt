@@ -1,0 +1,46 @@
+langgraph 1.2.11 · langgraph-checkpoint 4.2.0
+Recorded by packages/langgraph-wait/tests/test_spike_langgraph.py, verbatim.
+Interrupt ids are truncated to 8 chars; they are regenerated every run.
+
+== PARALLEL: two interrupts in one superstep ==
+  result['__interrupt__']  = [('5d65acb8', {'which': 'a'}), ('af0f93cd', {'which': 'b'})]
+  get_state().tasks        = [('na', ['5d65acb8'], None), ('nb', ['af0f93cd'], None)]
+  get_state().next         = ('na', 'nb')
+  checkpoint_id            = 1f1ac40b
+  side-effect log          = []
+
+== PARALLEL: after resuming ONE of the two ==
+  resumed                  = 8602d7c4 with {'ok': 1}
+  result keys              = ['__interrupt__', 'a']
+  result['__interrupt__']  = ['f88f6618']
+  the other interrupt      = f88f6618
+  state values             = {'a': {'ok': 1}}
+  side-effect log          = ['a']
+
+== PARALLEL: the #4796/#6792 bug, as observed ==
+  resumed                  = d20c47c9 (node 'na'); still parked = df7a9afd (node 'nb')
+  task 'na'   interrupts=['d20c47c9'] result={'a': {'ok': 1}} error=None
+  task 'nb'   interrupts=['df7a9afd'] result=None error=None
+  get_state().next         = ('nb',)
+  -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.
+  -> task.result is the discriminator, and is what still_pending() reads.
+
+== PARALLEL: replaying an already-applied resume ==
+  applied 5c4df358 twice; side-effect log = ['a']
+  -> LangGraph does not re-run a node whose resume it already applied.
+
+== SUBGRAPH: an interrupt raised two levels down ==
+  result['__interrupt__']  = [('529a0c2f', {'inner': True})]
+  get_state().tasks        = [('sub', ['529a0c2f'], None)]
+  get_state(subgraphs=True) = [('sub', ['529a0c2f'])]
+  get_state().next         = ('sub',)
+  checkpoint_id            = 1f1ac40b
+  -> it surfaces on the PARENT's __interrupt__, against the subgraph node's task.
+  -> subgraphs=True was not needed, so one adapter handles both shapes.
+
+== SUBGRAPH: resuming it through the parent ==
+  resumed e74b688c via the parent graph
+  final state values       = {'v': {'done': True}}
+  get_state().tasks        = []
+  -> resuming by id through the parent works; no subgraph-specific path needed.
+

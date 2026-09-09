@@ -35,6 +35,9 @@ IgnoreReason = Literal[
     "parked",
     "unknown_payload",
     "lease_held",
+    # Section 18.2: a wait whose policy said `on_timeout="fail"` has expired. The thread
+    # is deliberately abandoned rather than resumed.
+    "failed",
 ]
 
 MAX_QUESTION_BYTES = 200 * 1024

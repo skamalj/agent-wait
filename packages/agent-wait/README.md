@@ -19,5 +19,11 @@ outcome = runtime.dispatch(payload)  # Start | Resume | Ignore
 result = runtime.register(out, config, thread_id)
 ```
 
-Two calls, either side of your existing invoke. See `docs/integrating-a-consumer.md`
-and `docs/message-formats.md` at the repository root.
+Two calls, either side of your existing invoke.
+
+`WaitRuntime` also carries three **support methods** — `sweep()`, `cancel()` and
+`envelope_for()` — for the repair pass and operational tooling. They are not part of the
+quickstart; see "API reference — runtime operations" in `docs/architecture.md`.
+
+See also `docs/integrating-a-consumer.md` and `docs/message-formats.md` at the repository
+root.
