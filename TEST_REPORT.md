@@ -224,7 +224,7 @@ Being straight about this matters more than the pass count.
 
 ### CloudWatch evidence
 
-`reports/cloudwatch-run-lambda.log` holds the run Lambda's own account of it — the
+`reports/cloudwatch-run-lambda.txt` holds the run Lambda's own account of it — the
 `wait.created` / `wait.answered` / `wait.resumed` transitions, and the dispatch decisions
 in sequence:
 
