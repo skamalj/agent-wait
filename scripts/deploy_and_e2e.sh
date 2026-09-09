@@ -47,6 +47,12 @@ export CDK_DEFAULT_ACCOUNT
 if [[ -d "$ROOT/.venv/bin" ]]; then export PATH="$ROOT/.venv/bin:$PATH"
 else export PATH="$ROOT/.venv/Scripts:$PATH"; fi
 
+# Under Git Bash the CDK CLI is a *Windows* process, so a POSIX path like /c/Users/...
+# reaches it as C:\c\Users\... and the Lambda asset is reported "not found". cygpath does
+# the conversion; on Linux and macOS it does not exist and the path is already correct.
+BUNDLE="$ROOT/build/lambda"
+if command -v cygpath >/dev/null 2>&1; then BUNDLE="$(cygpath -w "$BUNDLE")"; fi
+
 e2e_status=0
 
 if [[ "$SKIP_DEPLOY" -eq 0 ]]; then
@@ -60,7 +66,7 @@ if [[ "$SKIP_DEPLOY" -eq 0 ]]; then
   ( cd "$ROOT/packages/agent-wait-aws/cdk" && \
     npx --yes aws-cdk@2 deploy --require-approval never \
       -c "stackName=$STACK_NAME" -c "region=$REGION" -c "waitTimeout=$WAIT_TIMEOUT" \
-      -c "bundlePath=$ROOT/build/lambda" )
+      -c "bundlePath=$BUNDLE" )
 fi
 
 if [[ "$SKIP_TESTS" -eq 0 ]]; then
@@ -73,7 +79,7 @@ if [[ "$DESTROY" -eq 1 ]]; then
   echo -e "\n== tearing down =="
   ( cd "$ROOT/packages/agent-wait-aws/cdk" && \
     npx --yes aws-cdk@2 destroy --force \
-      -c "stackName=$STACK_NAME" -c "region=$REGION" -c "bundlePath=$ROOT/build/lambda" )
+      -c "stackName=$STACK_NAME" -c "region=$REGION" -c "bundlePath=$BUNDLE" )
 fi
 
 if [[ "$e2e_status" -ne 0 ]]; then

@@ -62,6 +62,11 @@ def review(state: RefundState) -> RefundState:
         policy=WaitPolicy(
             timeout=DEMO_TIMEOUT,
             on_timeout="resume_default",
+            # REQUIREMENTS section 13 specifies this default verbatim. Note what section
+            # 18.1 does to it: on a timeout the graph receives `action="timeout"`, not
+            # `"reject"` -- the field records *how* the wait was settled, and the other
+            # keys survive. Which is why `route()` below tests for the positive case
+            # (`== "approve"`) rather than enumerating the ways a refund can be refused.
             default={"action": "reject", "reason": f"no response within {DEMO_TIMEOUT}"},
             allowed_actions=("approve", "reject"),
             tags={"approver_group": "finance"},

@@ -1,4 +1,5 @@
-"""The twelve correctness rules of REQUIREMENTS section 10, written once.
+"""The correctness rules of REQUIREMENTS section 10 -- plus rule 13 from section 18.2 --
+written once.
 
 Subclass `WaitStoreConformance`, override `make_store()`, and the whole suite runs
 against your store. `agent-wait` runs it over the in-memory and SQLite stores;
@@ -77,7 +78,7 @@ class CrashStore:
 
 
 class WaitStoreConformance:
-    """Override `make_store` and inherit twelve guarantees."""
+    """Override `make_store` and inherit thirteen guarantees."""
 
     @staticmethod
     def make_store() -> WaitStore:  # pragma: no cover - overridden
@@ -302,7 +303,8 @@ class WaitStoreConformance:
         outcome = rig.timeout(wait)
 
         assert isinstance(outcome, Resume)
-        assert outcome.command == {"resume_map": {"int-1": {"action": "reject", "reason": "no response"}}}
+        # Section 18.1: a mapping default gets `action: "timeout"` merged in last.
+        assert outcome.command == {"resume_map": {"int-1": {"action": "timeout", "reason": "no response"}}}
         assert rig.reload(wait).status == "expired"
         assert "expired" in rig.announce.transitions()
 
@@ -313,7 +315,56 @@ class WaitStoreConformance:
         outcome = rig.timeout(wait)
 
         assert isinstance(outcome, Ignore)
+        assert outcome.reason == "failed"
         assert rig.reload(wait).status == "failed"
+
+    # ------------------------------------------------------------------ rule 13
+    @pytest.mark.conformance
+    def test_rule_13_on_timeout_fail(self, rig: Rig) -> None:
+        """Section 18.2. `on_timeout="fail"` abandons the thread rather than resuming it.
+
+        Two conditional writes, not one: `pending -> expired` fires the `expired`
+        announce -- so the schedule is deleted and the world is told the wait is over --
+        and only then does `expired -> failed` close it out.
+        """
+        wait = rig.park(policy=approval_policy(on_timeout="fail", default=None))
+
+        outcome = rig.timeout(wait)
+
+        assert isinstance(outcome, Ignore)
+        assert outcome.reason == "failed"
+
+        settled = rig.reload(wait)
+        assert settled.status == "failed"
+        assert settled.action == "timeout"
+        assert settled.version == 2, "two conditional writes: pending->expired->failed"
+
+        assert "expired" in rig.announce.transitions(), "the expired announce must still fire"
+        assert "resumed" not in rig.announce.transitions()
+        assert rig.adapter.resumes == [], "the graph must never be invoked"
+        assert rig.store.get_lease("order-4471") is None, "the thread lease is released"
+
+    @pytest.mark.conformance
+    def test_rule_13_a_failed_wait_refuses_later_answers(self, rig: Rig) -> None:
+        wait = rig.park(policy=approval_policy(on_timeout="fail", default=None))
+        rig.timeout(wait)
+
+        late = rig.answer(wait, "approve", answer_id="click-late")
+        repeat = rig.timeout(wait)
+
+        assert isinstance(late, Ignore) and late.reason == "already_answered"
+        assert isinstance(repeat, Ignore) and repeat.reason == "duplicate"
+        assert rig.reload(wait).status == "failed"
+
+    @pytest.mark.conformance
+    def test_rule_13_resume_default_is_unaffected(self, rig: Rig) -> None:
+        """The other branch of the same policy field, for contrast."""
+        wait = rig.park(policy=approval_policy(on_timeout="resume_default"))
+
+        outcome = rig.timeout(wait)
+
+        assert isinstance(outcome, Resume)
+        assert rig.reload(wait).status == "expired"
 
     # ------------------------------------------------------------------ rule 7
     @pytest.mark.conformance

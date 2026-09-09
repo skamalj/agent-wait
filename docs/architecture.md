@@ -121,6 +121,25 @@ forever. The sweeper runs every minute, finds pending waits with no `notified_at
 announces them. It needs no graph and no checkpointer; it only ever pushes waits back onto
 the announce path and lets `dispatch()` do the deciding.
 
+## API reference — runtime operations
+
+The three functions above are the whole of what a **graph author and a handler** must
+call. Alongside them `WaitRuntime` carries three **support methods** (REQUIREMENTS §18.4).
+They are ours — the sweeper and operational tooling use them — and they are not part of the
+quickstart. They add no entry point and no pluggable interface.
+
+| Method | What it does | Who calls it |
+|---|---|---|
+| `runtime.sweep(limit=100)` | The repair pass. Re-announces pending waits with no `notified_at`, and re-announces overdue ones so a lost schedule is re-armed. Returns `{"scanned", "announced", "overdue"}`. Every action is idempotent, so it is safe to run every minute forever. | A one-minute EventBridge rule → `make_sweep_handler`. |
+| `runtime.cancel(wait_id, reason="")` | `pending → cancelled`, announced. The `cancelled` announce is what deletes the schedule. Returns `False` if the wait was already settled. Later answers get `already_answered`. | Operational tooling; a control path in your own application. |
+| `runtime.envelope_for(wait, transition)` | Builds the outbound envelope (§7.1) for a wait, minting a fresh token. | The sweeper, when re-announcing. Also useful if you need to re-emit an envelope by hand. |
+
+Two more exist for the hosting layer rather than for you: `runtime.refresh_lease(thread_id)`,
+which `make_run_handler`'s heartbeat calls while a long graph runs, and the `owner` attribute
+that identifies this process to the lease.
+
+Everything else on `WaitRuntime` is private and will change without notice.
+
 ## Why the store is the only hard dependency
 
 `WaitStore` needs exactly one primitive: **a conditional write that tells you whether you

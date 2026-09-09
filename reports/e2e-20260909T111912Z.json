@@ -1,270 +1,270 @@
 {
   "stack": "agent-wait-poc-ks",
   "region": "ap-south-1",
-  "started": "2026-09-09T10:08:02Z",
-  "finished": "2026-09-09T10:13:11Z",
+  "started": "2026-09-09T11:13:39Z",
+  "finished": "2026-09-09T11:19:12Z",
   "entries": [
     {
-      "at": "2026-09-09T10:08:02Z",
+      "at": "2026-09-09T11:13:39Z",
       "scenario": "A",
-      "note": "thread order-a-3c4b91: start message, amount 41000"
+      "note": "thread order-a-d09dd0: start message, amount 41000"
     },
     {
-      "at": "2026-09-09T10:08:06Z",
+      "at": "2026-09-09T11:13:43Z",
       "scenario": "A",
       "check": "one wait created and announced",
       "status": "PASS",
-      "detail": "01M22T97WZ1A8WG2NQ9S56SXN6"
+      "detail": "01M22Y1D95WQVT11SBDABGBC2Z"
     },
     {
-      "at": "2026-09-09T10:08:06Z",
+      "at": "2026-09-09T11:13:44Z",
       "scenario": "A",
       "check": "the world was told, once",
       "status": "PASS",
       "detail": "['wait.created']"
     },
     {
-      "at": "2026-09-09T10:08:06Z",
+      "at": "2026-09-09T11:13:44Z",
       "scenario": "A",
       "check": "the envelope advertises the agent's own queue",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:08:07Z",
+      "at": "2026-09-09T11:13:44Z",
       "scenario": "A",
       "check": "a timeout schedule was armed",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:08:07Z",
+      "at": "2026-09-09T11:13:44Z",
       "scenario": "A",
       "note": "redelivering the identical start message (what a crash looks like)"
     },
     {
-      "at": "2026-09-09T10:08:19Z",
+      "at": "2026-09-09T11:13:56Z",
       "scenario": "A",
       "check": "still exactly one wait",
       "status": "PASS",
       "detail": "1"
     },
     {
-      "at": "2026-09-09T10:08:29Z",
+      "at": "2026-09-09T11:14:06Z",
       "scenario": "A",
       "check": "no second announcement",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:08:29Z",
+      "at": "2026-09-09T11:14:06Z",
       "scenario": "A",
       "note": "approving"
     },
     {
-      "at": "2026-09-09T10:08:31Z",
+      "at": "2026-09-09T11:14:08Z",
       "scenario": "A",
       "check": "the refund happened exactly once",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:08:31Z",
+      "at": "2026-09-09T11:14:08Z",
       "scenario": "A",
       "note": "the same click again (double click / redelivery)"
     },
     {
-      "at": "2026-09-09T10:08:43Z",
+      "at": "2026-09-09T11:14:20Z",
       "scenario": "A",
       "check": "still exactly one refund",
       "status": "PASS",
       "detail": "1"
     },
     {
-      "at": "2026-09-09T10:08:43Z",
+      "at": "2026-09-09T11:14:20Z",
       "scenario": "A",
       "note": "a different decision, arriving late"
     },
     {
-      "at": "2026-09-09T10:08:43Z",
+      "at": "2026-09-09T11:14:20Z",
       "scenario": "A",
       "note": "a tampered token"
     },
     {
-      "at": "2026-09-09T10:08:43Z",
+      "at": "2026-09-09T11:14:20Z",
       "scenario": "A",
       "note": "a timeout arriving after the answer"
     },
     {
-      "at": "2026-09-09T10:08:58Z",
+      "at": "2026-09-09T11:14:35Z",
       "scenario": "A",
       "check": "STILL exactly one refund",
       "status": "PASS",
       "detail": "1"
     },
     {
-      "at": "2026-09-09T10:08:58Z",
+      "at": "2026-09-09T11:14:35Z",
       "scenario": "A",
       "check": "the wait ended resumed",
       "status": "PASS",
       "detail": "resumed"
     },
     {
-      "at": "2026-09-09T10:08:58Z",
+      "at": "2026-09-09T11:14:35Z",
       "scenario": "A",
       "check": "the action recorded is the first one",
       "status": "PASS",
       "detail": "approve"
     },
     {
-      "at": "2026-09-09T10:08:58Z",
+      "at": "2026-09-09T11:14:35Z",
       "scenario": "A",
       "check": "the schedule was deleted on answer",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:08:58Z",
+      "at": "2026-09-09T11:14:35Z",
       "scenario": "A",
       "check": "nothing reached the dead-letter queue",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:08:58Z",
+      "at": "2026-09-09T11:14:35Z",
       "scenario": "B",
-      "note": "thread order-b-a9465a: start, then wait out the 120s timeout"
+      "note": "thread order-b-a54b24: start, then wait out the 120s timeout"
     },
     {
-      "at": "2026-09-09T10:09:01Z",
+      "at": "2026-09-09T11:14:37Z",
       "scenario": "B",
       "check": "a schedule is holding the timeout",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:09:01Z",
+      "at": "2026-09-09T11:14:37Z",
       "scenario": "B",
-      "note": "expires_at is 2026-09-09T10:12:07Z; waiting for the scheduler"
+      "note": "expires_at is 2026-09-09T11:17:43Z; waiting for the scheduler"
     },
     {
-      "at": "2026-09-09T10:12:08Z",
+      "at": "2026-09-09T11:18:08Z",
       "scenario": "B",
       "check": "the timeout fired with no human involved",
       "status": "PASS",
       "detail": "resumed"
     },
     {
-      "at": "2026-09-09T10:12:08Z",
+      "at": "2026-09-09T11:18:08Z",
       "scenario": "B",
       "check": "the action recorded is 'timeout'",
       "status": "PASS",
       "detail": "timeout"
     },
     {
-      "at": "2026-09-09T10:12:08Z",
+      "at": "2026-09-09T11:18:08Z",
       "scenario": "B",
       "check": "no refund was issued",
       "status": "PASS",
       "detail": "0"
     },
     {
-      "at": "2026-09-09T10:12:08Z",
+      "at": "2026-09-09T11:18:08Z",
       "scenario": "B",
       "note": "approving after the timeout"
     },
     {
-      "at": "2026-09-09T10:12:23Z",
+      "at": "2026-09-09T11:18:23Z",
       "scenario": "B",
       "check": "the late approval changed nothing",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:12:24Z",
+      "at": "2026-09-09T11:18:23Z",
       "scenario": "B",
       "check": "the wait ended resumed on the default",
       "status": "PASS",
       "detail": "resumed"
     },
     {
-      "at": "2026-09-09T10:12:24Z",
+      "at": "2026-09-09T11:18:24Z",
       "scenario": "C",
-      "note": "thread order-c-3de9b0: park, approve, then redeliver the same approval"
+      "note": "thread order-c-065bf0: park, approve, then redeliver the same approval"
     },
     {
-      "at": "2026-09-09T10:12:28Z",
+      "at": "2026-09-09T11:18:28Z",
       "scenario": "C",
       "check": "the refund was issued",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:12:28Z",
+      "at": "2026-09-09T11:18:28Z",
       "scenario": "C",
       "note": "redelivering the identical approval, three times"
     },
     {
-      "at": "2026-09-09T10:12:48Z",
+      "at": "2026-09-09T11:18:48Z",
       "scenario": "C",
       "check": "the refund count is still 1",
       "status": "PASS",
       "detail": "1"
     },
     {
-      "at": "2026-09-09T10:12:48Z",
+      "at": "2026-09-09T11:18:48Z",
       "scenario": "C",
       "check": "nothing reached the dead-letter queue",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:12:48Z",
+      "at": "2026-09-09T11:18:48Z",
       "scenario": "D",
-      "note": "thread order-d-9e8566: park, then simulate a crash between create and announce"
+      "note": "thread order-d-687d3a: park, then simulate a crash between create and announce"
     },
     {
-      "at": "2026-09-09T10:12:51Z",
+      "at": "2026-09-09T11:18:51Z",
       "scenario": "D",
       "check": "the wait is now invisible: no notified_at, no schedule",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:12:51Z",
+      "at": "2026-09-09T11:18:51Z",
       "scenario": "D",
       "note": "waiting for the one-minute sweeper"
     },
     {
-      "at": "2026-09-09T10:13:09Z",
+      "at": "2026-09-09T11:19:09Z",
       "scenario": "D",
       "check": "the sweeper re-announced it",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:13:09Z",
+      "at": "2026-09-09T11:19:09Z",
       "scenario": "D",
       "check": "the world was told after all",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:13:09Z",
+      "at": "2026-09-09T11:19:09Z",
       "scenario": "D",
       "check": "and the timeout was armed",
       "status": "PASS",
-      "detail": "01M22THWC0NN526JS8RBKKBCXX"
+      "detail": "01M22YAQNQXDTY5Y2H2F2GN3NC"
     },
     {
-      "at": "2026-09-09T10:13:11Z",
+      "at": "2026-09-09T11:19:12Z",
       "scenario": "D",
       "check": "the repaired wait is answerable",
       "status": "PASS",
       "detail": ""
     },
     {
-      "at": "2026-09-09T10:13:11Z",
+      "at": "2026-09-09T11:19:12Z",
       "scenario": "D",
       "check": "and it refunded exactly once",
       "status": "PASS",

@@ -1,5 +1,6 @@
 *.egg-info/
 *.pyc
+.coverage
 .env
 .pytest_cache/
 .ruff_cache/
@@ -7,6 +8,5 @@
 .venv/
 __pycache__/
 build/
-cdk.out/
 cdk.out/
 reports/*.log

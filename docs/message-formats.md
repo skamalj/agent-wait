@@ -80,7 +80,7 @@ Send this to `reply_to`. For an SQS FIFO entry point, use `MessageGroupId = thre
 |---|---|---|
 | `token` | yes | Copied verbatim from the envelope. Identifies and authorises. |
 | `action` | no (default `resume`) | Must be in `allowed_actions`. `timeout` is reserved for the scheduler. |
-| `payload` | no | Merged with `action` to form the value the agent's `ask()` returns. |
+| `payload` | no | Merged with `action` to form the value the agent's `ask()` returns. `action` is merged **last**, so a `payload` containing its own `action` key does not override it. |
 | `actor` | no | **Informational only.** It grants nothing — see below. |
 | `answer_id` | **yes** | Your idempotency id. |
 
@@ -163,6 +163,7 @@ happen":
 | `not_pending` | The thread already moved past this interrupt. | No — this is success. |
 | `parked` | The wait does not exist *yet*; the answer was stored and will be applied. | No. |
 | `unknown_payload` | Not a start and not an answer — e.g. no `answer_id`. | No. Fix the sender. |
+| `failed` | The wait timed out and its policy said `on_timeout: "fail"`. The thread was abandoned on purpose, not resumed. | No. |
 | `lease_held` | Another worker is running this thread right now. | **Yes.** |
 
 `lease_held` is the only one worth retrying. Everything else is a decision, not a failure.

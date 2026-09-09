@@ -11,6 +11,9 @@ in TEST_REPORT.md.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from importlib.metadata import version
+from pathlib import Path
 from typing import Any, TypedDict
 
 import pytest
@@ -19,6 +22,47 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 pytestmark = pytest.mark.spike
+
+# ---------------------------------------------------------------- verbatim recording
+# The project manager asked for the observed behaviour of parallel and subgraph
+# interrupts to be recorded verbatim in the report, pass or fail -- these are the items
+# most likely to differ from the design. So the spike writes down what it actually saw,
+# and the fixture's teardown runs whether the assertions held or not.
+
+OBSERVATIONS: list[str] = []
+OBSERVATIONS_PATH = Path(__file__).resolve().parents[3] / "reports" / "langgraph-spike-observations.txt"
+
+
+def record(line: str = "") -> None:
+    OBSERVATIONS.append(line)
+
+
+def short(value: object) -> str:
+    """Interrupt ids are 32 hex chars and change every run; the first 8 identify them
+    within one observation without pretending they are stable across runs."""
+    text = str(value)
+    return text[:8] if len(text) > 12 else text
+
+
+def _tasks(graph: Any, config: dict[str, Any]) -> list[tuple[str, list[str], Any]]:
+    """`(task name, the interrupt ids it advertises, its result)` -- the three fields the
+    whole parallel-interrupt question turns on."""
+    return [
+        (task.name, [short(i.id) for i in task.interrupts], task.result)
+        for task in graph.get_state(config).tasks
+    ]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def write_observations() -> Iterator[None]:
+    OBSERVATIONS.clear()
+    record(f"langgraph {version('langgraph')} · langgraph-checkpoint {version('langgraph-checkpoint')}")
+    record("Recorded by packages/langgraph-wait/tests/test_spike_langgraph.py, verbatim.")
+    record("Interrupt ids are truncated to 8 chars; they are regenerated every run.")
+    record()
+    yield
+    OBSERVATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OBSERVATIONS_PATH.write_text("\n".join(OBSERVATIONS) + "\n", encoding="utf-8")
 
 
 def checkpoint_id(graph: Any, config: dict[str, Any]) -> str:
@@ -132,6 +176,14 @@ def test_two_parallel_interrupts_get_distinct_ids() -> None:
 
     raised = graph.invoke({}, config)["__interrupt__"]
 
+    record("== PARALLEL: two interrupts in one superstep ==")
+    record(f"  result['__interrupt__']  = {[(short(i.id), i.value) for i in raised]}")
+    record(f"  get_state().tasks        = {_tasks(graph, config)}")
+    record(f"  get_state().next         = {graph.get_state(config).next}")
+    record(f"  checkpoint_id            = {short(checkpoint_id(graph, config))}")
+    record(f"  side-effect log          = {log}")
+    record()
+
     assert len(raised) == 2
     assert raised[0].id != raised[1].id
     assert {i.value["which"] for i in raised} == {"a", "b"}
@@ -147,6 +199,15 @@ def test_resuming_one_parallel_interrupt_leaves_the_other_parked() -> None:
     first, second = graph.invoke({}, config)["__interrupt__"]
 
     out = graph.invoke(Command(resume={first.id: {"ok": 1}}), config)
+
+    record("== PARALLEL: after resuming ONE of the two ==")
+    record(f"  resumed                  = {short(first.id)} with {{'ok': 1}}")
+    record(f"  result keys              = {sorted(out)}")
+    record(f"  result['__interrupt__']  = {[short(i.id) for i in out.get('__interrupt__', [])]}")
+    record(f"  the other interrupt      = {short(second.id)}")
+    record(f"  state values             = {graph.get_state(config).values}")
+    record(f"  side-effect log          = {log}")
+    record()
 
     assert log == ["a"]
     assert [i.id for i in out["__interrupt__"]] == [second.id]
@@ -172,6 +233,20 @@ def test_known_bug_tasks_over_report_after_a_partial_parallel_resume() -> None:
 
     tasks = {task.name: task for task in graph.get_state(config).tasks}
 
+    record("== PARALLEL: the #4796/#6792 bug, as observed ==")
+    record(
+        f"  resumed                  = {short(first.id)} (node 'na'); still parked = {short(second.id)} (node 'nb')"
+    )
+    for name, task in tasks.items():
+        record(
+            f"  task {name!r:6} interrupts={[short(i.id) for i in task.interrupts]} "
+            f"result={task.result!r} error={task.error!r}"
+        )
+    record(f"  get_state().next         = {graph.get_state(config).next}")
+    record("  -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.")
+    record("  -> task.result is the discriminator, and is what still_pending() reads.")
+    record()
+
     reported = {i.id for task in tasks.values() for i in task.interrupts}
     assert first.id in reported, "the finished task still advertises its interrupt"
     assert second.id in reported
@@ -192,6 +267,11 @@ def test_replaying_a_resume_does_not_repeat_the_side_effect() -> None:
     graph.invoke(Command(resume={first.id: {"ok": 1}}), config)
 
     graph.invoke(Command(resume={first.id: {"ok": 1}}), config)
+
+    record("== PARALLEL: replaying an already-applied resume ==")
+    record(f"  applied {short(first.id)} twice; side-effect log = {log}")
+    record("  -> LangGraph does not re-run a node whose resume it already applied.")
+    record()
 
     assert log == ["a"], "the node ran once despite the resume being applied twice"
 
@@ -225,6 +305,20 @@ def test_a_subgraph_interrupt_surfaces_on_the_parent() -> None:
     config = {"configurable": {"thread_id": "s1"}}
 
     raised = graph.invoke({}, config)["__interrupt__"]
+    with_subgraphs = graph.get_state(config, subgraphs=True)
+
+    record("== SUBGRAPH: an interrupt raised two levels down ==")
+    record(f"  result['__interrupt__']  = {[(short(i.id), i.value) for i in raised]}")
+    record(f"  get_state().tasks        = {_tasks(graph, config)}")
+    record(
+        f"  get_state(subgraphs=True) = "
+        f"{[(t.name, [short(i.id) for i in t.interrupts]) for t in with_subgraphs.tasks]}"
+    )
+    record(f"  get_state().next         = {graph.get_state(config).next}")
+    record(f"  checkpoint_id            = {short(checkpoint_id(graph, config))}")
+    record("  -> it surfaces on the PARENT's __interrupt__, against the subgraph node's task.")
+    record("  -> subgraphs=True was not needed, so one adapter handles both shapes.")
+    record()
 
     assert len(raised) == 1
     assert raised[0].value == {"inner": True}
@@ -240,6 +334,13 @@ def test_a_subgraph_interrupt_resumes_through_the_parent() -> None:
     raised = graph.invoke({}, config)["__interrupt__"][0]
 
     final = graph.invoke(Command(resume={raised.id: {"done": True}}), config)
+
+    record("== SUBGRAPH: resuming it through the parent ==")
+    record(f"  resumed {short(raised.id)} via the parent graph")
+    record(f"  final state values       = {final}")
+    record(f"  get_state().tasks        = {_tasks(graph, config)}")
+    record("  -> resuming by id through the parent works; no subgraph-specific path needed.")
+    record()
 
     assert final["v"] == {"done": True}
     assert graph.get_state(config).tasks == ()
