@@ -1,7 +1,7 @@
 """In-memory `WaitStore`. The reference implementation of the semantics.
 
 Every other store is judged against this one: the conformance suite runs the same
-twelve rules over all of them. Deep-copies on the way in and out, so a caller holding a
+conformance rules over all of them. Deep-copies on the way in and out, so a caller holding a
 `Wait` cannot reach through it and change the store -- which is exactly the isolation a
 real database would give and exactly the bug an in-memory store invites.
 

@@ -4,7 +4,7 @@ The point of the rig is that a conformance test should read like the rule it is 
 `rig.park()` then `rig.answer(wait, "approve")` should be the whole test, so that when
 one fails you are looking at the rule and not at six lines of setup.
 
-The framework here is a stub, not LangGraph. That is deliberate: the twelve rules are
+The framework here is a stub, not LangGraph. That is deliberate: the rules are
 about the *core*, and they must hold for any framework. LangGraph gets its own
 integration suite in `langgraph-wait`.
 """

@@ -3,43 +3,43 @@ Recorded by packages/langgraph-wait/tests/test_spike_langgraph.py, verbatim.
 Interrupt ids are truncated to 8 chars; they are regenerated every run.
 
 == PARALLEL: two interrupts in one superstep ==
-  result['__interrupt__']  = [('e716e97e', {'which': 'a'}), ('fdddba74', {'which': 'b'})]
-  get_state().tasks        = [('na', ['e716e97e'], None), ('nb', ['fdddba74'], None)]
+  result['__interrupt__']  = [('c564afee', {'which': 'a'}), ('807047a3', {'which': 'b'})]
+  get_state().tasks        = [('na', ['c564afee'], None), ('nb', ['807047a3'], None)]
   get_state().next         = ('na', 'nb')
-  checkpoint_id            = 1f1ac44c
+  checkpoint_id            = 1f1ac46c
   side-effect log          = []
 
 == PARALLEL: after resuming ONE of the two ==
-  resumed                  = 1c7dc9b5 with {'ok': 1}
+  resumed                  = 27b7d49d with {'ok': 1}
   result keys              = ['__interrupt__', 'a']
-  result['__interrupt__']  = ['64ba1eaf']
-  the other interrupt      = 64ba1eaf
+  result['__interrupt__']  = ['45038478']
+  the other interrupt      = 45038478
   state values             = {'a': {'ok': 1}}
   side-effect log          = ['a']
 
 == PARALLEL: the #4796/#6792 bug, as observed ==
-  resumed                  = 124602d2 (node 'na'); still parked = 9ce461e2 (node 'nb')
-  task 'na'   interrupts=['124602d2'] result={'a': {'ok': 1}} error=None
-  task 'nb'   interrupts=['9ce461e2'] result=None error=None
+  resumed                  = b0b420ab (node 'na'); still parked = 2ac6e970 (node 'nb')
+  task 'na'   interrupts=['b0b420ab'] result={'a': {'ok': 1}} error=None
+  task 'nb'   interrupts=['2ac6e970'] result=None error=None
   get_state().next         = ('nb',)
   -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.
   -> task.result is the discriminator, and is what still_pending() reads.
 
 == PARALLEL: replaying an already-applied resume ==
-  applied e5b4b709 twice; side-effect log = ['a']
+  applied 00a3cd50 twice; side-effect log = ['a']
   -> LangGraph does not re-run a node whose resume it already applied.
 
 == SUBGRAPH: an interrupt raised two levels down ==
-  result['__interrupt__']  = [('6660e0bf', {'inner': True})]
-  get_state().tasks        = [('sub', ['6660e0bf'], None)]
-  get_state(subgraphs=True) = [('sub', ['6660e0bf'])]
+  result['__interrupt__']  = [('1b145480', {'inner': True})]
+  get_state().tasks        = [('sub', ['1b145480'], None)]
+  get_state(subgraphs=True) = [('sub', ['1b145480'])]
   get_state().next         = ('sub',)
-  checkpoint_id            = 1f1ac44c
+  checkpoint_id            = 1f1ac46c
   -> it surfaces on the PARENT's __interrupt__, against the subgraph node's task.
   -> subgraphs=True was not needed, so one adapter handles both shapes.
 
 == SUBGRAPH: resuming it through the parent ==
-  resumed 461baf6c via the parent graph
+  resumed a1046e25 via the parent graph
   final state values       = {'v': {'done': True}}
   get_state().tasks        = []
   -> resuming by id through the parent works; no subgraph-specific path needed.

@@ -1,4 +1,4 @@
-"""Run the twelve rules against both stores built into the core.
+"""Run every conformance rule against both stores built into the core.
 
 `agent-wait-aws` runs the same class against `DynamoWaitStore` on moto. Three
 implementations, one set of guarantees.

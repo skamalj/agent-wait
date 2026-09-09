@@ -73,7 +73,7 @@ Every one has a test named after it, and every one runs against all three stores
 | 6 Late timer | `test_rule_06_late_timer_is_a_noop` (+2 more) | ✅ |
 | 7 Resume idempotency | `test_rule_07_resume_idempotency`, `_register_marks_answered_waits_resumed` | ✅ |
 | 8 Token integrity | `test_rule_08_tampered_token_is_rejected_without_a_store_read` (+2) | ✅ |
-| 9 Binding | `test_rule_09_binding_mismatch` | ✅ |
+| 9 Binding (step 2.2a, §18.6) | `test_rule_09_binding_mismatch` | ✅ |
 | 10 Announce isolation | `test_rule_10_announce_isolation`, `_sweeper_reannounces_unnotified_waits` | ✅ |
 | 11 Parallel interrupts | `test_rule_11_parallel_interrupts_are_independent` | ✅ |
 | 12 Cancel | `test_rule_12_cancel`, `_cancel_is_not_repeatable` | ✅ |
@@ -463,12 +463,17 @@ they are recorded here as rulings, not deviations.
    `test_a_first_message_that_crashes_is_retried_with_its_input` end-to-end through the
    Lambda handler against a real graph.
 
-### Interpretations still standing
+7. **§18.6 — the binding check is step 2.2a.** The last thing in this report that was an
+   *interpretation* rather than a ruling. §4.1.2 never numbered the binding check, though
+   §10.9 has always required it; it is now step 2.2a, immediately after `store.get()` and
+   before the allowed-action check — the order that was already implemented. The paper
+   matches the code, and rule 9 in §10 cites the step.
 
-7. **§4.1's numbered algorithm omits the binding check** that §10.9 requires. Inserted
-   after the store read and before the allowed-actions check, so a token minted for a
-   different question is refused with `binding_mismatch` before anything is written. Not
-   ruled on; flagged again below.
+   The order is load-bearing, not cosmetic. The binding is what ties a token to the exact
+   question it answers, so it has to be settled before anything is decided on the strength
+   of that token and before any write. Checking it after the allowed-action check would
+   mean reasoning about a policy that may belong to a different question; checking it
+   before the store read is impossible, because there is nothing to compare against yet.
 
 ### Implementation choices
 
@@ -555,6 +560,12 @@ they are recorded here as rulings, not deviations.
 
 ---
 
+25. **Decided after sign-off, recorded rather than escalated.** Four docstrings still
+    said "the twelve rules" after §18.2 and §18.5 added rules 13 and 14
+    (`store/memory.py`, `tests/rig.py`, and both conformance entry points). Reworded to
+    "every conformance rule" so the count cannot go stale again. No behaviour change; the
+    rules table in §2 is the count of record.
+
 ## 6. Known gaps
 
 1. **Genuine mid-process crashes are only tested locally.** See §4 above. A fault-injection
@@ -582,14 +593,20 @@ they are recorded here as rulings, not deviations.
 
 ## 7. Open questions for the project manager
 
-Every question this report has raised has now been answered and folded into
-REQUIREMENTS §18 — including §7.1 of the previous revision, the first-run-crash defect,
-which became **§18.5**. See §5 above. One remains.
+**None.** Every question this report raised has been answered and folded into
+REQUIREMENTS §18 — §18.1 through §18.6 — and each is recorded in §5 above with the
+reasoning that settled it. Two are worth re-reading before anyone changes this code:
 
-1. **§4.1's numbered algorithm still omits the binding check** that §10.9 requires
-   (deviation 9). It is implemented after the store read and before the allowed-actions
-   check, which is the only order that works, but the algorithm and the rules still
-   disagree on paper. Worth folding into §4.1 explicitly.
+* **§18.1 / §18.1a** are a deliberate *asymmetry*, not an inconsistency. An answer's
+  `payload` cannot override the envelope's `action`; a timeout's `default` is not
+  overridden at all. One arrives from outside and is authorisation-checked, the other is
+  written by the graph author. Tests guard both directions, so collapsing them back into
+  one rule fails the suite.
+* **§18.5** rests on the distinction between *applied* and *persisted*. Moving the
+  applied-message write out of `dispatch()` reopens the hole it closes, in the opposite
+  direction. The ruling says why.
+
+Anything found after sign-off was decided here and recorded in §5 rather than escalated.
 
 ## 8. Recommended v0.2 items
 

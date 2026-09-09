@@ -307,7 +307,7 @@ Responsibilities of the wrapper: iterate SQS records; call `runtime.dispatch(bod
 6. **Late timer.** A timeout arriving after an answer is a no-op (CAS fails).
 7. **Resume idempotency.** A redelivered resume for a thread already past the interrupt is `Ignore(not_pending)`; the graph is not invoked; no side effect repeats.
 8. **Token integrity.** Tampered / expired / wrong-key tokens are rejected without a store read.
-9. **Binding.** The token carries `binding16`; `dispatch()` rejects an answer whose binding does not match the record (`binding_mismatch`).
+9. **Binding.** The token carries `binding16`; `dispatch()` rejects an answer whose binding does not match the record (`binding_mismatch`). Performed at step 2.2a of §4.1.2 — see §18.6.
 10. **Announce isolation.** An adapter raising must not affect the run or other adapters; the sweeper re-announces unnotified waits.
 11. **Parallel interrupts.** Two interrupts in one superstep → two waits; answering one resumes only that node; the other's wait, token and schedule are untouched.
 12. **Cancel.** `runtime.cancel(wait_id, reason)` → `pending → cancelled`, schedule deleted, announced; later answers → `already_answered`.
@@ -544,3 +544,20 @@ thread that interrupted in its first superstep can have the former without the l
 Conformance test: `test_rule_14_first_run_crash_before_checkpoint`, crash-injected, plus
 `test_rule_14_once_checkpointed_the_input_is_not_reapplied` so the fix cannot quietly undo
 rule 3.
+
+### 18.6 The binding check is step 2.2a
+
+§4.1.2 never numbered the binding check, though §10.9 has always required it. The paper now
+matches the code. §4.1.2 is amended to insert, immediately after `store.get(wait_id)`
+(step 2.2) and **before** the allowed-action check (step 2.3):
+
+> **2.2a** Compare the token's `binding16` against the record's `binding`. On mismatch →
+> `Ignore(binding_mismatch)`.
+
+The order is load-bearing rather than cosmetic. The binding is what ties a token to the
+*exact* question it answers, so it has to be settled before anything is decided on the
+strength of that token and before any write. Checking it after the allowed-action check
+would mean reasoning about a policy that may belong to a different question; checking it
+before the store read is impossible, since there is nothing to compare against yet.
+
+Rule 9 in §10 now cites this step.

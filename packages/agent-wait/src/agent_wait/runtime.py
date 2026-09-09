@@ -192,8 +192,10 @@ class WaitRuntime:
             self.store.park_answer(claims.wait_id, dict(payload), ttl=self.clock.now() + PARKED_TTL)
             return Ignore("parked", "answer stored; the wait does not exist yet")
 
-        # Rule 9. Not numbered in 4.1 but required by section 10.9: the token is bound to
-        # the exact question, so an edited graph invalidates tokens already in inboxes.
+        # 2.2a -- rule 9, numbered by section 18.6. The token is bound to the exact
+        # question, so an edited graph invalidates tokens already sitting in inboxes.
+        # Settled before the allowed-action check, and before any write: nothing may be
+        # decided on the strength of a token that belongs to a different question.
         if wait.binding16 != claims.binding16:
             return Ignore("binding_mismatch", "the question changed since this token was issued")
 
