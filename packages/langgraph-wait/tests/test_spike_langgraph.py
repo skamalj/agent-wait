@@ -37,11 +37,24 @@ def record(line: str = "") -> None:
     OBSERVATIONS.append(line)
 
 
+_LABELS: dict[str, str] = {}
+
+
 def short(value: object) -> str:
-    """Interrupt ids are 32 hex chars and change every run; the first 8 identify them
-    within one observation without pretending they are stable across runs."""
+    """Label an interrupt or checkpoint id stably, in first-seen order.
+
+    The raw ids are 32 random hex characters, regenerated every run. Printing them makes
+    the recorded file churn on every test run -- a meaningless diff in the working tree,
+    and a quote in TEST_REPORT that goes stale the moment anyone runs the suite.
+
+    What the observation is actually *about* is which task advertises which interrupt and
+    what each one's `result` says. That is preserved exactly; only the opaque identifier
+    is replaced by a stable label, so the same behaviour records as the same bytes.
+    """
     text = str(value)
-    return text[:8] if len(text) > 12 else text
+    if len(text) <= 12:
+        return text
+    return _LABELS.setdefault(text, f"<id-{chr(ord('A') + len(_LABELS))}>")
 
 
 def _tasks(graph: Any, config: dict[str, Any]) -> list[tuple[str, list[str], Any]]:
@@ -56,9 +69,12 @@ def _tasks(graph: Any, config: dict[str, Any]) -> list[tuple[str, list[str], Any
 @pytest.fixture(scope="module", autouse=True)
 def write_observations() -> Iterator[None]:
     OBSERVATIONS.clear()
+    _LABELS.clear()
     record(f"langgraph {version('langgraph')} · langgraph-checkpoint {version('langgraph-checkpoint')}")
     record("Recorded by packages/langgraph-wait/tests/test_spike_langgraph.py, verbatim.")
-    record("Interrupt ids are truncated to 8 chars; they are regenerated every run.")
+    record("Interrupt and checkpoint ids are 32 random hex chars, regenerated every run;")
+    record("they are labelled <id-A>, <id-B>, ... in first-seen order so that identical")
+    record("behaviour records as identical bytes. Everything else is as observed.")
     record()
     yield
     OBSERVATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)

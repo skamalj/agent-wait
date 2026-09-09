@@ -178,9 +178,9 @@ Verified against **langgraph 1.2.11**. After resuming one of two parallel interr
 verbatim, from the spike suite:
 
 ```text
-resumed = 2b5c8373 (node 'na');  still parked = e893eec0 (node 'nb')
-task 'na'   interrupts=['2b5c8373'] result={'a': {'ok': 1}} error=None
-task 'nb'   interrupts=['e893eec0'] result=None            error=None
+resumed = <id-F> (node 'na');  still parked = <id-G> (node 'nb')
+task 'na'   interrupts=['<id-F>'] result={'a': {'ok': 1}} error=None
+task 'nb'   interrupts=['<id-G>'] result=None            error=None
 get_state().next = ('nb',)
 ```
 
