@@ -5,6 +5,14 @@ verify:
 
     {"current": "k2", "keys": {"k2": "<random>", "k1": "<the previous one>"}}
 
+A flat form is also accepted, where every key other than `current` is a signing key:
+
+    {"current": "k1", "k1": "<random>"}
+
+That is the shape CloudFormation can generate on its own (`generate_string_key` writes
+one value into a template and cannot nest), so the stack can create a real random key at
+deploy time instead of asking somebody to paste one in afterwards.
+
 Keeping the old key is not optional. Tokens live for seven days and sit in inboxes; a
 rotation that drops the previous key invalidates every approval link already sent, and
 the failure looks exactly like an attack.
@@ -56,8 +64,11 @@ class SecretsManagerKeyProvider:
             raise TokenInvalid(f"secret {self.secret_id} is not JSON") from err
 
         raw_keys = document.get("keys")
+        if raw_keys is None and isinstance(document, Mapping):
+            # The flat form: every entry other than `current` is a signing key.
+            raw_keys = {k: v for k, v in document.items() if k != "current"}
         if not isinstance(raw_keys, Mapping) or not raw_keys:
-            raise TokenInvalid(f"secret {self.secret_id} has no 'keys' object")
+            raise TokenInvalid(f"secret {self.secret_id} has no signing keys")
         current = document.get("current")
         if current not in raw_keys:
             raise TokenInvalid(f"secret {self.secret_id} names a 'current' key it does not hold")

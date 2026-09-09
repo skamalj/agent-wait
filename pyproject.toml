@@ -31,6 +31,8 @@ dev = [
     "boto3-stubs[dynamodb,sqs,sns,events,scheduler,secretsmanager]>=1.35",
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-sqlite>=2.0",
+    "aws-cdk-lib>=2.160",
+    "constructs>=10.3",
 ]
 
 [tool.pytest.ini_options]

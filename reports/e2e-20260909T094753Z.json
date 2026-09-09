@@ -1,0 +1,23 @@
+{
+  "stack": "agent-wait-poc-ks",
+  "region": "ap-south-1",
+  "started": "2026-09-09T09:46:21Z",
+  "finished": "2026-09-09T09:47:53Z",
+  "entries": [
+    {
+      "at": "2026-09-09T09:46:21Z",
+      "scenario": "A",
+      "note": "thread order-a-1aa6d6: start message, amount 41000"
+    },
+    {
+      "at": "2026-09-09T09:47:53Z",
+      "scenario": "A",
+      "check": "the wait was created and announced",
+      "status": "FAIL",
+      "detail": "nothing appeared"
+    }
+  ],
+  "failures": [
+    "A: the wait was created and announced (nothing appeared)"
+  ]
+}

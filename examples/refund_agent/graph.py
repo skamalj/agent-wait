@@ -72,7 +72,29 @@ def review(state: RefundState) -> RefundState:
 
 def issue_refund(state: RefundState) -> RefundState:
     PAYMENTS_CALLED.append(state["order_id"])  # <- the irreversible call
+    _record_refund(state["order_id"])
     return {"status": "refunded"}
+
+
+def _record_refund(order_id: str) -> None:
+    """Mirror the side effect into DynamoDB when deployed, so the end-to-end run can
+    assert on it.
+
+    An in-memory list proves nothing about a Lambda you are not inside. The update is a
+    deliberate unconditional `ADD calls 1`: if the node ever ran twice, the counter says
+    2, which is exactly the failure the whole library exists to prevent.
+    """
+    table_name = os.environ.get("AGENT_WAIT_SIDE_EFFECT_TABLE")
+    if not table_name:
+        return
+    import boto3
+
+    boto3.resource("dynamodb").Table(table_name).update_item(
+        Key={"pk": f"REFUND#{order_id}", "sk": "#"},
+        UpdateExpression="ADD #calls :one",
+        ExpressionAttributeNames={"#calls": "calls"},
+        ExpressionAttributeValues={":one": 1},
+    )
 
 
 def notify_customer(state: RefundState) -> RefundState:

@@ -1,0 +1,17 @@
+{
+  "app": "python app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.json", "**/__pycache__", "**/*.pyc", "cdk.out"]
+  },
+  "context": {
+    "stackName": "agent-wait-poc",
+    "region": "ap-south-1",
+    "bundlePath": "../../../build/lambda",
+    "waitTimeout": "P3D",
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:target-partitions": ["aws"]
+  }
+}
