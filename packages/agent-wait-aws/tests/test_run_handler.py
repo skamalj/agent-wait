@@ -433,21 +433,16 @@ def test_the_redelivery_after_a_raising_graph_can_take_the_lease() -> None:
     ), "a lease held by a dead invocation would block every redelivery for 15 minutes"
 
 
-def test_known_gap_a_first_message_that_crashes_replays_with_no_input() -> None:
-    """A defect this ruling surfaced, pinned so it is not lost.
+def test_a_first_message_that_crashes_is_retried_with_its_input() -> None:
+    """Section 18.5, end to end through the Lambda handler and a real graph.
 
-    `dispatch()` records a start message as applied *before* the graph consumes it. If
-    the very first run then crashes, no checkpoint exists, and the redelivery -- correctly
-    recognised as a replay -- invokes with `input=None`, which LangGraph refuses with
-    `EmptyInputError` because the thread has no state to resume from.
-
-    Every later message is fine: by then a checkpoint exists and replaying with None is
-    exactly right. Reported in TEST_REPORT as an open question; the candidate fix is to
-    record the message in `register()` rather than `dispatch()`, so a run that never
-    completed never counts as applied.
+    `dispatch()` marks a start message applied *before* the graph consumes it, so
+    "applied" means "we started on this", not "the framework kept the result". Before
+    18.5, a first run that crashed left the message marked applied against a thread with
+    no checkpoint; the redelivery invoked with `input=None` and LangGraph raised
+    `EmptyInputError`, and the thread was stuck until the DLQ. Now `has_checkpoint()`
+    tells the two cases apart and the input goes back in.
     """
-    from langgraph.errors import EmptyInputError
-
     agent = Agent()
     calls = {"n": 0}
 
@@ -455,7 +450,7 @@ def test_known_gap_a_first_message_that_crashes_replays_with_no_input() -> None:
         def invoke(self, *args: Any, **kwargs: Any) -> Any:
             calls["n"] += 1
             if calls["n"] == 1:
-                raise RuntimeError("transient")
+                raise RuntimeError("the model provider is down")
             return agent.graph.invoke(*args, **kwargs)
 
         def get_state(self, *args: Any, **kwargs: Any) -> Any:
@@ -468,11 +463,27 @@ def test_known_gap_a_first_message_that_crashes_replays_with_no_input() -> None:
     second = handler(event, None)
 
     assert first == {"batchItemFailures": [{"itemIdentifier": "sqs-retry"}]}
-    # The retry is reported as a failure too -- but for the wrong reason.
-    assert second == {"batchItemFailures": [{"itemIdentifier": "sqs-retry"}]}
-    with pytest.raises(EmptyInputError):
-        agent.graph.invoke(None, agent.runtime.adapter.config_for("order-4471"))
-    assert agent.store.get_lease("order-4471") is None, "the lease is still released each time"
+    assert second == {"batchItemFailures": []}, "the retry must succeed, not raise EmptyInputError"
+    assert len(agent.store.find(thread_id="order-4471")) == 1, "and still only one wait"
+    assert agent.store.get_lease("order-4471") is None
+
+
+def test_a_later_redelivery_still_replays_from_the_checkpoint() -> None:
+    """The other half of 18.5: once state exists, the input must not be applied twice."""
+    agent = Agent()
+    event = agent.event(START_BODY, message_ids=["sqs-start"])
+
+    agent.handler(event, None)
+    agent.handler(event, None)
+
+    assert len(agent.store.find(thread_id="order-4471")) == 1
+    assert len(agent.announce.of("created")) == 1
+    assert agent.runtime.adapter.has_checkpoint("order-4471") is True
+
+
+def test_has_checkpoint_is_false_for_a_thread_that_never_ran() -> None:
+    agent = Agent()
+    assert agent.runtime.adapter.has_checkpoint("never-heard-of-it") is False
 
 
 def test_a_raising_graph_does_not_falsely_finalise_a_wait() -> None:

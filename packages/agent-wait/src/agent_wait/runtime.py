@@ -63,7 +63,7 @@ _log = logging.getLogger("agent_wait.runtime")
 class FrameworkAdapter(Protocol):
     """What the core needs from a framework, and nothing more (section 9.1).
 
-    Four methods is the whole cost of supporting a new framework. Nothing in the core
+    Five methods is the whole cost of supporting a new framework. Nothing in the core
     imports LangGraph, and nothing here assumes a graph, a checkpointer or a thread that
     lives in memory.
     """
@@ -81,6 +81,16 @@ class FrameworkAdapter(Protocol):
     def still_pending(self, wait: Wait) -> bool:
         """Is the thread genuinely still parked here? The guard that stops a redelivered
         resume from running a side effect twice (rule 7)."""
+        ...
+
+    def has_checkpoint(self, thread_id: str) -> bool:
+        """Has the framework persisted any state at all for this thread?
+
+        Section 18.5. `dispatch()` marks a start message applied before the graph runs,
+        so a run that dies before the framework writes anything leaves a message recorded
+        as applied against a thread with nothing to resume from. This is how the core
+        tells that case apart from an ordinary redelivery.
+        """
         ...
 
     def config_for(self, thread_id: str) -> dict[str, Any]: ...
@@ -137,9 +147,22 @@ class WaitRuntime:
 
         first_time = self.store.record_applied(thread_id, str(message_id), ttl=self.clock.now() + APPLIED_TTL)
         if not first_time:
-            # Redelivery. Re-invoke with None so the framework advances from its own
-            # checkpoint instead of applying the same input a second time.
-            return Start(thread_id, None, config)
+            # A redelivery -- but "applied" is recorded here, *before* the graph runs, so
+            # it means "we started on this message", not "the framework kept the result".
+            # Section 18.5: ask the framework which of the two it is.
+            if self.adapter.has_checkpoint(thread_id):
+                # Ordinary redelivery. Re-invoke with None so the framework advances from
+                # its own checkpoint instead of applying the same input a second time.
+                return Start(thread_id, None, config)
+            # The first run died before anything was persisted. Nothing was applied, so
+            # replaying with None would hand the framework a thread it has never heard of;
+            # the input is what has to go back in.
+            _log.info(
+                "thread %s was marked applied but has no checkpoint; the first run died "
+                "before persisting anything, so replaying the input",
+                thread_id,
+            )
+            return Start(thread_id, payload.get("input"), config)
         return Start(thread_id, payload.get("input"), config)
 
     # -- 4.1.2 answer --------------------------------------------------------
@@ -169,8 +192,10 @@ class WaitRuntime:
             self.store.park_answer(claims.wait_id, dict(payload), ttl=self.clock.now() + PARKED_TTL)
             return Ignore("parked", "answer stored; the wait does not exist yet")
 
-        # Rule 9. Not numbered in 4.1 but required by section 10.9: the token is bound to
-        # the exact question, so an edited graph invalidates tokens already in inboxes.
+        # 2.2a -- rule 9, numbered by section 18.6. The token is bound to the exact
+        # question, so an edited graph invalidates tokens already sitting in inboxes.
+        # Settled before the allowed-action check, and before any write: nothing may be
+        # decided on the strength of a token that belongs to a different question.
         if wait.binding16 != claims.binding16:
             return Ignore("binding_mismatch", "the question changed since this token was issued")
 
@@ -211,7 +236,8 @@ class WaitRuntime:
             to="expired" if is_timeout else "answered",
             answer=resume_value,
             action=action,
-            actor=payload.get("actor"),
+            # Section 18.1: whatever the graph is told, the record says a timer did this.
+            actor="system:timer" if is_timeout else payload.get("actor"),
             answered_at=now,
             answer_id=answer_id,
             updated_at=now,
@@ -273,12 +299,27 @@ class WaitRuntime:
 
     @staticmethod
     def _timeout_value(default: Any) -> Any:
-        """Section 18.1: a mapping default gets `action: "timeout"` merged in last, for
-        the same reason. A non-mapping default is passed through untouched -- the author
-        asked for that exact value, and wrapping it would be a surprise."""
-        if isinstance(default, Mapping):
-            return {**dict(cast("Mapping[str, Any]", default)), "action": "timeout"}
-        return default
+        """Section 18.1 as amended: the author's default reaches the graph as written.
+
+        The smuggling argument that fixed the *answer* merge order does not apply here.
+        A `payload` arrives from outside and is checked against `allowed_actions`, so the
+        envelope's action has to win. A `default` is declared by the graph author, in the
+        graph, next to the question -- there is no second party to defend against, and
+        overriding it would mean an author who wrote `{"action": "reject"}` gets something
+        they did not ask for.
+
+        So: a mapping default is passed through unchanged, gaining `action: "timeout"`
+        only if it says nothing about an action; a non-mapping default is untouched.
+
+        The audit trail is unaffected -- the wait record and every announce still carry
+        `action="timeout"` and `actor="system:timer"`. What happened and what the graph
+        was told are two different questions, and they get two different answers.
+        """
+        if not isinstance(default, Mapping):
+            return default
+        body = dict(cast("Mapping[str, Any]", default))
+        body.setdefault("action", "timeout")
+        return body
 
     # ==================================================================== register
     def register(self, result: Any, config: Any, thread_id: str) -> RegisterResult:

@@ -1,4 +1,4 @@
-"""`LangGraphAdapter`: the four methods, including the workaround for #4796/#6792."""
+"""`LangGraphAdapter`: the five methods, including the workaround for #4796/#6792."""
 
 from __future__ import annotations
 
@@ -164,3 +164,38 @@ def test_still_pending_survives_the_partial_parallel_resume_bug() -> None:
 def test_checkpoint_id_is_empty_for_a_thread_that_never_ran() -> None:
     adapter = LangGraphAdapter(single_graph())
     assert adapter.checkpoint_id(adapter.config_for("never")) == ""
+
+
+# --------------------------------------------------------------------------- has_checkpoint
+def test_has_checkpoint_is_false_before_the_thread_runs() -> None:
+    """Section 18.5. This is the signal that tells "the first run died before persisting
+    anything" apart from "an ordinary redelivery"."""
+    adapter = LangGraphAdapter(single_graph())
+
+    assert adapter.has_checkpoint("never-ran") is False
+
+
+def test_has_checkpoint_is_true_once_the_thread_is_parked() -> None:
+    graph = single_graph()
+    adapter = LangGraphAdapter(graph)
+    graph.invoke({}, adapter.config_for("t"))
+
+    assert adapter.has_checkpoint("t") is True
+
+
+def test_has_checkpoint_stays_true_after_the_thread_finishes() -> None:
+    graph = single_graph()
+    adapter = LangGraphAdapter(graph)
+    raised = graph.invoke({}, adapter.config_for("t"))["__interrupt__"][0]
+    graph.invoke(Command(resume={raised.id: {"action": "approve"}}), adapter.config_for("t"))
+
+    assert adapter.has_checkpoint("t") is True
+
+
+def test_has_checkpoint_does_not_leak_between_threads() -> None:
+    graph = single_graph()
+    adapter = LangGraphAdapter(graph)
+    graph.invoke({}, adapter.config_for("t"))
+
+    assert adapter.has_checkpoint("t") is True
+    assert adapter.has_checkpoint("other") is False

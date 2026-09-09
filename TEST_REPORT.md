@@ -40,12 +40,12 @@ are what was actually used.
 
 | Level | Tooling | Tests | Result |
 |---|---|---|---|
-| **Unit** | pytest | 102 | ✅ all pass |
-| **Conformance** | pytest, parametrised over `InMemoryWaitStore`, `SqliteWaitStore`, `DynamoWaitStore` (moto) | 105 (35 × 3 stores) | ✅ all pass |
-| **LangGraph integration** | real langgraph 1.2.11, `InMemorySaver` + `SqliteSaver` | 55 (incl. 11 spike) | ✅ all pass |
-| **AWS local** | moto — DynamoDB, SQS, SNS, EventBridge, Scheduler, Secrets Manager | 83 | ✅ all pass |
+| **Unit** | pytest | 105 | ✅ all pass |
+| **Conformance** | pytest, parametrised over `InMemoryWaitStore`, `SqliteWaitStore`, `DynamoWaitStore` (moto) | 114 (38 × 3 stores) | ✅ all pass |
+| **LangGraph integration** | real langgraph 1.2.11, `InMemorySaver` + `SqliteSaver` | 59 (incl. 11 spike) | ✅ all pass |
+| **AWS local** | moto — DynamoDB, SQS, SNS, EventBridge, Scheduler, Secrets Manager | 85 | ✅ all pass |
 | **AWS end-to-end** | real account, `agent-wait-poc-ks` | 4 scenarios / 28 checks | ✅ all pass |
-| | | **349 pytest tests, 0 failures** | (4 e2e tests skip unless `AGENT_WAIT_E2E=1`) |
+| | | **367 pytest tests, 0 failures** | (4 e2e tests skip unless `AGENT_WAIT_E2E=1`) |
 
 ### Coverage
 
@@ -60,8 +60,8 @@ JUnit XML and the coverage XML are committed under `reports/`.
 
 ### The correctness rules (§10, extended by §18.2)
 
-Thirteen rules now: the twelve of §10 plus rule 13 from §18.2. Every one has a test
-named after it, and every one runs against all three stores.
+Fourteen rules now: the twelve of §10, plus rule 13 from §18.2 and rule 14 from §18.5.
+Every one has a test named after it, and every one runs against all three stores.
 
 | Rule | Test | ×3 stores |
 |---|---|---|
@@ -73,11 +73,12 @@ named after it, and every one runs against all three stores.
 | 6 Late timer | `test_rule_06_late_timer_is_a_noop` (+2 more) | ✅ |
 | 7 Resume idempotency | `test_rule_07_resume_idempotency`, `_register_marks_answered_waits_resumed` | ✅ |
 | 8 Token integrity | `test_rule_08_tampered_token_is_rejected_without_a_store_read` (+2) | ✅ |
-| 9 Binding | `test_rule_09_binding_mismatch` | ✅ |
+| 9 Binding (step 2.2a, §18.6) | `test_rule_09_binding_mismatch` | ✅ |
 | 10 Announce isolation | `test_rule_10_announce_isolation`, `_sweeper_reannounces_unnotified_waits` | ✅ |
 | 11 Parallel interrupts | `test_rule_11_parallel_interrupts_are_independent` | ✅ |
 | 12 Cancel | `test_rule_12_cancel`, `_cancel_is_not_repeatable` | ✅ |
 | **13 `on_timeout="fail"`** (§18.2) | `test_rule_13_on_timeout_fail` (+2 more) | ✅ |
+| **14 first-run crash keeps the input** (§18.5) | `test_rule_14_first_run_crash_before_checkpoint` (+2, crash-injected) | ✅ |
 
 Rule 2's concurrency test is not a simulation: eight threads meet at a barrier and race
 the store's real compare-and-set, and the test asserts exactly one returns `True`. It
@@ -136,43 +137,43 @@ Recorded by packages/langgraph-wait/tests/test_spike_langgraph.py, verbatim.
 Interrupt ids are truncated to 8 chars; they are regenerated every run.
 
 == PARALLEL: two interrupts in one superstep ==
-  result['__interrupt__']  = [('5020d69e', {'which': 'a'}), ('79fcff8a', {'which': 'b'})]
-  get_state().tasks        = [('na', ['5020d69e'], None), ('nb', ['79fcff8a'], None)]
+  result['__interrupt__']  = [('c4a1248b', {'which': 'a'}), ('259568a8', {'which': 'b'})]
+  get_state().tasks        = [('na', ['c4a1248b'], None), ('nb', ['259568a8'], None)]
   get_state().next         = ('na', 'nb')
-  checkpoint_id            = 1f1ac3e0
+  checkpoint_id            = 1f1ac443
   side-effect log          = []
 
 == PARALLEL: after resuming ONE of the two ==
-  resumed                  = cb2818a8 with {'ok': 1}
+  resumed                  = db5baed8 with {'ok': 1}
   result keys              = ['__interrupt__', 'a']
-  result['__interrupt__']  = ['f0755bdb']
-  the other interrupt      = f0755bdb
+  result['__interrupt__']  = ['db3b5266']
+  the other interrupt      = db3b5266
   state values             = {'a': {'ok': 1}}
   side-effect log          = ['a']
 
 == PARALLEL: the #4796/#6792 bug, as observed ==
-  resumed                  = 50b60cff (node 'na'); still parked = e577ef96 (node 'nb')
-  task 'na'   interrupts=['50b60cff'] result={'a': {'ok': 1}} error=None
-  task 'nb'   interrupts=['e577ef96'] result=None error=None
+  resumed                  = dc856799 (node 'na'); still parked = 03239521 (node 'nb')
+  task 'na'   interrupts=['dc856799'] result={'a': {'ok': 1}} error=None
+  task 'nb'   interrupts=['03239521'] result=None error=None
   get_state().next         = ('nb',)
   -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.
   -> task.result is the discriminator, and is what still_pending() reads.
 
 == PARALLEL: replaying an already-applied resume ==
-  applied 4a9776d6 twice; side-effect log = ['a']
+  applied fb6c536e twice; side-effect log = ['a']
   -> LangGraph does not re-run a node whose resume it already applied.
 
 == SUBGRAPH: an interrupt raised two levels down ==
-  result['__interrupt__']  = [('f59ab530', {'inner': True})]
-  get_state().tasks        = [('sub', ['f59ab530'], None)]
-  get_state(subgraphs=True) = [('sub', ['f59ab530'])]
+  result['__interrupt__']  = [('244d5b98', {'inner': True})]
+  get_state().tasks        = [('sub', ['244d5b98'], None)]
+  get_state(subgraphs=True) = [('sub', ['244d5b98'])]
   get_state().next         = ('sub',)
-  checkpoint_id            = 1f1ac3e0
+  checkpoint_id            = 1f1ac443
   -> it surfaces on the PARENT's __interrupt__, against the subgraph node's task.
   -> subgraphs=True was not needed, so one adapter handles both shapes.
 
 == SUBGRAPH: resuming it through the parent ==
-  resumed a610df7e via the parent graph
+  resumed 08d668ef via the parent graph
   final state values       = {'v': {'done': True}}
   get_state().tasks        = []
   -> resuming by id through the parent works; no subgraph-specific path needed.
@@ -280,6 +281,25 @@ the pre-§18 build; because the amendments change `dispatch()` and the run handl
 stack was rebuilt, redeployed and re-run rather than assuming the earlier evidence still
 applied. Only the second run's evidence is committed.
 
+**§18.1a and §18.5 landed after that run, and were not redeployed** — on the project
+manager's instruction, since neither touches `make_run_handler` and the deployed topology
+is identical. Being precise about what that leaves uncovered:
+
+* **§18.1a** changes what the graph receives on a timeout, which is exactly scenario B.
+  That path is covered locally against a **real** LangGraph graph over both `InMemorySaver`
+  and `SqliteSaver` (`test_scenario_b_timeout_applies_the_default`), which asserts the
+  graph now sees `{"action": "reject", …}` while the wait record still reads
+  `action="timeout"`, `actor="system:timer"`. What the deployed run additionally proved —
+  that EventBridge Scheduler fires unattended and the message arrives at the queue — is
+  unchanged by the ruling.
+* **§18.5** only fires when a *first* run crashes before its checkpoint, which the
+  end-to-end suite never induced (see "what was simulated" below). It is covered by rule 14
+  across three stores and by
+  `test_a_first_message_that_crashes_is_retried_with_its_input`, which drives the real
+  Lambda handler and a real graph.
+
+Neither is unverified; both are verified one layer down from the deployed run.
+
 ### Two defects the re-run caught
 
 Both were found by *using* the delivered script rather than by reading it, which is the
@@ -372,32 +392,41 @@ The four open questions this report raised were ruled on by the project manager 
 appended to REQUIREMENTS as **§18 Amendments**. All four are now implemented and tested;
 they are recorded here as rulings, not deviations.
 
-1. **§18.1 — resume value, merge order corrected.** `payload` confirmed as the answer
-   envelope's `payload` *field*. But the merge order in §4.1.9 was wrong, and the PM caught
-   a real hole: `{"action": action, **payload}` lets a sender smuggle
+1. **§18.1 — resume value, merge order corrected (answer path).** `payload` confirmed as
+   the answer envelope's `payload` *field*. The merge order in §4.1.9 was wrong, and the PM
+   caught a real hole: `{"action": action, **payload}` lets a sender smuggle
    `{"payload": {"action": "approve"}}` past a wait whose `allowed_actions` is
-   `("reject",)` — the allowed-actions check inspects the envelope's `action` and passes,
-   and the graph then reads `approve`. Now `{**payload, "action": action}`; the
-   authorisation-checked field is the one the graph sees. Same on the timeout path:
-   `{**default, "action": "timeout"}` for a mapping default, and a non-mapping default
-   passes through untouched.
+   `("reject",)` — the allowed-actions check inspects the envelope's `action`, sees
+   `reject` and passes, and the graph then reads `approve`. Now
+   `{**payload, "action": action}`: the authorisation-checked field is the one the graph
+   sees. Pinned by `test_a_payload_cannot_override_the_envelopes_action`.
 
-   Pinned by `test_a_payload_cannot_override_the_envelopes_action` and
-   `test_a_timeout_default_cannot_override_the_timeout_action`.
+2. **§18.1a — a timeout default keeps its own action.** My first implementation applied the
+   same merge order to `policy.default`, which was wrong and the PM reversed it. The
+   smuggling argument does not transfer: a `default` is written by the graph author, in the
+   graph, next to the question, so there is no second party to defend against and
+   overriding it hands an author something they did not ask for.
 
-   *Consequence, and worth flagging:* a policy declaring `default={"action": "reject", …}`
-   now resumes with `action="timeout"`. That is the ruling's intent — the field records
-   **how the wait was settled** — but it does change what a graph author sees, so
-   `examples/refund_agent` and the scenario-B assertion were updated. Graphs should route
-   on a positive condition (`action == "approve"`) rather than enumerating negatives.
+   A mapping default now reaches the graph **exactly as declared**, gaining
+   `action: "timeout"` only when it says nothing about an action; a non-mapping default is
+   untouched. `default={"action": "reject", …}` therefore arrives as `action="reject"`.
 
-2. **§18.2 — `on_timeout="fail"` gets its own reason.** `Ignore.reason` extended with
+   The audit trail is where "what happened" lives, and is unaffected: the wait record and
+   every announce carry `action="timeout"` and `actor="system:timer"`. *What the graph is
+   told* and *what happened* are separate questions with separate answers.
+
+   The asymmetry is guarded from both sides —
+   `test_a_timeout_default_reaches_the_graph_as_the_author_wrote_it` and
+   `test_a_human_answer_still_cannot_smuggle_an_action` — so relaxing the default path
+   cannot quietly relax the answer path. The scenario-B assertion is back to `reject`.
+
+3. **§18.2 — `on_timeout="fail"` gets its own reason.** `Ignore.reason` extended with
    `"failed"`. `pending → expired` (so the `expired` announce still fires and the schedule
    is deleted), then `expired → failed`; the graph is never invoked and the lease is
    released. Conformance test `test_rule_13_on_timeout_fail`, plus two more covering later
    answers and the `resume_default` contrast — all three run against all three stores.
 
-3. **§18.3 — holding the lease across an immediate resume: approved**, and §4.2.5 amended
+4. **§18.3 — holding the lease across an immediate resume: approved**, and §4.2.5 amended
    to say so. `make_run_handler` now runs the follow-up `register()` in a `finally`, so a
    graph that raises still releases the lease. Without it, a lease held by a dead
    invocation would block every redelivery of that thread for its full fifteen minutes and
@@ -406,49 +435,77 @@ they are recorded here as rulings, not deviations.
    finalises waits the thread has demonstrably moved past, and a graph that just raised has
    not moved past anything. Three tests in `test_run_handler.py`.
 
-4. **§18.4 — `envelope_for()` accepted as support API.** `sweep()`, `cancel()` and
+5. **§18.4 — `envelope_for()` accepted as support API.** `sweep()`, `cancel()` and
    `envelope_for()` are now documented under **"API reference — runtime operations"** in
    `docs/architecture.md`, and stay out of the README quickstart, which remains
    `ask()` / `dispatch()` / `register()`. No new entry point, no new interface.
 
-### Interpretations still standing
+6. **§18.5 — a first-run crash must not lose the input.** The defect §18.3 surfaced, now
+   fixed. `dispatch()` records a start message as applied *before* the graph consumes it,
+   so "applied" means *we started on this*, not *the framework kept the result*. A first
+   run that died before LangGraph wrote a checkpoint left the message marked applied
+   against a thread with nothing to resume from; the redelivery invoked with `input=None`
+   and raised `EmptyInputError`, and the thread was stuck until the DLQ.
 
-5. **§4.1's numbered algorithm omits the binding check** that §10.9 requires. Inserted
-   after the store read and before the allowed-actions check, so a token minted for a
-   different question is refused with `binding_mismatch` before anything is written. Not
-   ruled on; flagged again below.
+   The PM rejected my candidate fix — moving the write into `register()` — because it opens
+   the opposite and worse hole: a crash *after* the checkpoint but *before* `register()`
+   would leave the message unrecorded and the redelivery would re-apply the input as a
+   second turn. Correct, and I had not seen it.
+
+   The write stays in `dispatch()`. `FrameworkAdapter` gains a fifth method,
+   `has_checkpoint(thread_id)`: a message already marked applied against a thread with no
+   persisted state means the first run died before anything was kept, so the input goes
+   back in. For LangGraph it is a `checkpoint_id` **or** non-empty `values`, because a
+   thread that interrupted in its first superstep can have the former without the latter.
+
+   Rule 14, crash-injected, plus `test_rule_14_once_checkpointed_the_input_is_not_reapplied`
+   so the fix cannot quietly undo rule 3 — all three across all three stores — and
+   `test_a_first_message_that_crashes_is_retried_with_its_input` end-to-end through the
+   Lambda handler against a real graph.
+
+7. **§18.6 — the binding check is step 2.2a.** The last thing in this report that was an
+   *interpretation* rather than a ruling. §4.1.2 never numbered the binding check, though
+   §10.9 has always required it; it is now step 2.2a, immediately after `store.get()` and
+   before the allowed-action check — the order that was already implemented. The paper
+   matches the code, and rule 9 in §10 cites the step.
+
+   The order is load-bearing, not cosmetic. The binding is what ties a token to the exact
+   question it answers, so it has to be settled before anything is decided on the strength
+   of that token and before any write. Checking it after the allowed-action check would
+   mean reasoning about a policy that may belong to a different question; checking it
+   before the store read is impossible, because there is nothing to compare against yet.
 
 ### Implementation choices
 
-6. **`Clock` / `SystemClock` / `FakeClock` live in `model.py`** rather than a `clock.py`,
+8. **`Clock` / `SystemClock` / `FakeClock` live in `model.py`** rather than a `clock.py`,
    to keep §15's file list exact. `FakeClock` is shipped rather than kept in a conftest
    because the conformance suite runs against stores in another package.
-7. **`announce_refs` is unused in v0.1.** Schedules are named after the `wait_id`, so
+9. **`announce_refs` is unused in v0.1.** Schedules are named after the `wait_id`, so
    creating and deleting one needs no stored handle. The field is kept for adapters that
    do need one.
-8. **The token MAC follows §11 literally**: `base64url(HMAC-SHA256(...))[:27]` — the full
+10. **The token MAC follows §11 literally**: `base64url(HMAC-SHA256(...))[:27]` — the full
    digest base64-encoded, then truncated. The reference prototype truncated the *digest*
    first; that shape was not copied.
-9. **`SchedulerAnnounce` delivers immediately when `expires_at` is already past** instead
+11. **`SchedulerAnnounce` delivers immediately when `expires_at` is already past** instead
    of creating a schedule EventBridge would reject. This is the sweeper's repair path for
    a wait whose schedule was lost while the process was down, and it preserves the
    invariant that timeouts always arrive as ordinary answers at the ordinary entry point.
-10. **`SecretsManagerKeyProvider` also accepts a flat `{"current": "k1", "k1": "…"}`.**
+12. **`SecretsManagerKeyProvider` also accepts a flat `{"current": "k1", "k1": "…"}`.**
     CloudFormation's `generate_string_key` writes one value into a template and cannot
     nest, so this lets the stack generate a real random key at deploy time — no key in
     source, no manual step after deploy.
-11. **Python 3.12 pinned** with `.python-version`; uv selected 3.14 otherwise.
-12. **`DynamoWaitStore.find()` follows `LastEvaluatedKey`.** Found during the deployment:
+13. **Python 3.12 pinned** with `.python-version`; uv selected 3.14 otherwise.
+14. **`DynamoWaitStore.find()` follows `LastEvaluatedKey`.** Found during the deployment:
     a single query is a *page*, not an answer, and a wait the sweeper never sees is a
     thread parked forever. Fixed with a test that forces multiple pages.
-13. **The example handler raises its own loggers to INFO.** Also found during deployment:
+15. **The example handler raises its own loggers to INFO.** Also found during deployment:
     the Lambda runtime leaves the root logger at WARNING, so `LogAnnounce` and the run
     handler were silent in production — exactly when you want to know why a message was
     ignored.
 
 ### Things added to the example, not the library
 
-14. **`examples/refund_agent/dynamo_checkpointer.py`** — a ~150-line LangGraph
+16. **`examples/refund_agent/dynamo_checkpointer.py`** — a ~150-line LangGraph
     `BaseCheckpointSaver` over DynamoDB. agent-wait never touches a checkpoint and is
     deliberately checkpointer-agnostic, but the example *must* have a durable saver or
     "resume on a machine that was not running" is untestable and all four scenarios would
@@ -456,100 +513,100 @@ they are recorded here as rulings, not deviations.
     0.1.0 and `langgraph-checkpoint-aws`, which requires Bedrock Session Management. It has
     its own 9 tests, including a graph parked by one saver instance and resumed through a
     different one.
-15. **An `Announcements` SQS queue subscribed to the SNS topic**, and `issue_refund`
+17. **An `Announcements` SQS queue subscribed to the SNS topic**, and `issue_refund`
     mirroring its side effect into DynamoDB. Both exist so the end-to-end run can observe
     from outside the Lambda — the queue is an ordinary consumer, exactly what an approvals
     UI would be, and it is how the run gets a real token out of a real envelope instead of
     minting one for itself.
-16. **`handler.py` is ~50 lines, not the "5 lines" §15 suggests**, because the wiring
+18. **`handler.py` is ~50 lines, not the "5 lines" §15 suggests**, because the wiring
     (store, tokens, four announce adapters, entry point) is written out rather than hidden
     behind a helper. The agent-wait-specific part really is two lines:
     `runtime = WaitRuntime(...)` and `handler = make_run_handler(graph, runtime)`.
-17. **Files beyond §15's tree**: `scripts/` (bundle build, deploy), a root `conftest.py`
+19. **Files beyond §15's tree**: `scripts/` (bundle build, deploy), a root `conftest.py`
     (puts the shared conformance suite and the example on `sys.path`), and test helper
     modules (`rig.py`, `conformance.py`, `driver.py`, `parallel_graphs.py`).
 
 ### Build
 
-18. **No Docker on the host**, so the Lambda bundle is built with
+20. **No Docker on the host**, so the Lambda bundle is built with
     `uv pip install --python-platform x86_64-manylinux2014`, which resolves Linux wheels
     from Windows. The whole dependency tree is pure Python. boto3/botocore are excluded —
     the runtime ships a recent one, and including them adds ~15 MB to a 50 MB limit.
     Result: 46.8 MiB unpacked.
-19. **OneDrive.** The repository lives in a synced folder, which rejects hardlinks
+21. **OneDrive.** The repository lives in a synced folder, which rejects hardlinks
     (`os error 396`) and briefly locks directories it is scanning. The build script passes
     `--link-mode=copy` and retries `rmtree`. Noted because it will bite anyone else on the
     same setup.
 
 ### Process
 
-20. **Four stacked pull requests**, one per package plus the proof-of-concept, rather than
-    four independent ones — `agent-wait` has no dependencies, but `langgraph-wait` and
+22. **Stacked pull requests**, one per package plus the proof-of-concept, rather than
+    independent ones — `agent-wait` has no dependencies, but `langgraph-wait` and
     `agent-wait-aws` both import it and their tests run the core's conformance suite, so
-    independent branches into `main` could not have been green on their own. They are
-    stacked in dependency order and reviewable commit by commit. `main` was never
+    independent branches into `main` could not have been green on their own. They were
+    stacked in dependency order and are reviewable commit by commit. `main` was never
     force-pushed and never left red.
 
+23. **Merging a stack needs one extra step, which I got wrong first.** GitHub only
+    auto-retargets a stacked pull request when its base branch is *deleted*. These were
+    kept, so merging #2, #3 and #4 landed them on their intermediate base branches and
+    only #1 reached `main`. #5 carried the remaining reviewed commits to `main`; no code
+    changed and nothing was force-pushed. Worth knowing before anyone stacks again: either
+    delete each base on merge, or expect to land the tip explicitly.
+
+24. **The §18 rulings arrived in two rounds.** §18.1–18.4 were implemented on the tip of
+    the original stack (#4). §18.1a and §18.5 came after `main` had the lot, and are #6 —
+    a single reviewable PR against `main` rather than another stack.
+
 ---
+
+25. **Decided after sign-off, recorded rather than escalated.** Four docstrings still
+    said "the twelve rules" after §18.2 and §18.5 added rules 13 and 14
+    (`store/memory.py`, `tests/rig.py`, and both conformance entry points). Reworded to
+    "every conformance rule" so the count cannot go stale again. No behaviour change; the
+    rules table in §2 is the count of record.
 
 ## 6. Known gaps
 
 1. **Genuine mid-process crashes are only tested locally.** See §4 above. A fault-injection
    layer in the deployed Lambda (an env var that raises after `invoke()`) would close this;
    it was judged not worth adding a production code path that exists only to break things.
-2. **A first message whose graph crashes cannot be replayed.** `dispatch()` marks a start
-   message applied before the graph consumes it, so if the very first run raises there is
-   no checkpoint and the redelivery invokes with `input=None`, which LangGraph refuses.
-   Only the first message on a thread is affected. Pinned by
-   `test_known_gap_a_first_message_that_crashes_replays_with_no_input`; candidate fix and
-   the ruling it needs are in §7.1.
-3. **Questions over 200 KB fail loudly** (§16.6). Blob-by-reference is a v0.2 item.
-4. **Step Functions hosting is designed for, not built** (§16.10). Nothing in the core
+
+2. **Questions over 200 KB fail loudly** (§16.6). Blob-by-reference is a v0.2 item.
+3. **Step Functions hosting is designed for, not built** (§16.10). Nothing in the core
    prevents it.
-5. **The sweeper's overdue path re-announces every minute** until the wait settles. In
+4. **The sweeper's overdue path re-announces every minute** until the wait settles. In
    practice that is one or two extra timeout messages, and the second is a `duplicate`
    because `answer_id` is derived from the `wait_id` — but it is not rate-limited.
-6. **An unindexed `find()` is a table `Scan`.** Only reachable from tests and the
+5. **An unindexed `find()` is a table `Scan`.** Only reachable from tests and the
    no-filter case; the sweeper and `register()` always use GSI1 or GSI2.
-7. **Parked answers are keyed by `wait_id` or correlation key.** Two threads sharing a
+6. **Parked answers are keyed by `wait_id` or correlation key.** Two threads sharing a
    correlation key would collide. Correlation is optional and unused by the example.
-8. **No metrics or alarms.** Waits created/answered/expired, and the age of the oldest
+7. **No metrics or alarms.** Waits created/answered/expired, and the age of the oldest
    pending wait, are the obvious three.
-9. **One framework and one cloud.** Both protocols are clean, but only one implementation
+8. **One framework and one cloud.** Both protocols are clean, but only one implementation
    of each has actually been exercised — which is the honest position for v0.1.
-10. **`langgraph-wait` requires `langgraph >= 1.2, < 2`.** The `task.result` workaround is
+9. **`langgraph-wait` requires `langgraph >= 1.2, < 2`.** The `task.result` workaround is
    version-sensitive by nature; the spike suite is what will catch a change.
 
 ---
 
 ## 7. Open questions for the project manager
 
-The four questions this report originally raised were **answered** and are now
-REQUIREMENTS §18; see §5 above. Two remain.
+**None.** Every question this report raised has been answered and folded into
+REQUIREMENTS §18 — §18.1 through §18.6 — and each is recorded in §5 above with the
+reasoning that settled it. Two are worth re-reading before anyone changes this code:
 
-1. **A defect §18.3 surfaced: a first message whose graph crashes replays with no input.**
-   `dispatch()` records a start message as applied *before* the graph consumes it. If the
-   very first run then raises, no checkpoint exists, and the redelivery — correctly
-   recognised as a replay — invokes with `input=None`, which LangGraph refuses with
-   `EmptyInputError` because the thread has nothing to resume from. The thread is then
-   stuck until the message reaches the DLQ.
+* **§18.1 / §18.1a** are a deliberate *asymmetry*, not an inconsistency. An answer's
+  `payload` cannot override the envelope's `action`; a timeout's `default` is not
+  overridden at all. One arrives from outside and is authorisation-checked, the other is
+  written by the graph author. Tests guard both directions, so collapsing them back into
+  one rule fails the suite.
+* **§18.5** rests on the distinction between *applied* and *persisted*. Moving the
+  applied-message write out of `dispatch()` reopens the hole it closes, in the opposite
+  direction. The ruling says why.
 
-   Every *later* message is fine: a checkpoint exists by then and replaying with `None` is
-   exactly right. Only the first-message-crashes case is affected.
-
-   Pinned by `test_known_gap_a_first_message_that_crashes_replays_with_no_input`, which
-   asserts the current behaviour rather than the desired one, so the fix will show up as a
-   deliberate change.
-
-   **Candidate fix, needs your ruling:** record the applied message in `register()` rather
-   than in `dispatch()` — a run that never completed then never counts as applied. It
-   splits today's single conditional put into check-then-set, which is safe because
-   `dispatch()` takes the thread lease first, but it does move a §4.1.1 step into §4.2 and
-   I did not want to make that change unilaterally.
-
-2. **§4.1's numbered algorithm still omits the binding check** that §10.9 requires
-   (deviation 5). Currently inserted after the store read and before the allowed-actions
-   check. Worth folding into §4.1 explicitly so the algorithm and the rules agree.
+Anything found after sign-off was decided here and recorded in §5 rather than escalated.
 
 ## 8. Recommended v0.2 items
 

@@ -154,12 +154,14 @@ def test_scenario_b_timeout_applies_the_default(agent: LocalAgent) -> None:
     assert PAYMENTS_CALLED == []
     state = agent.graph.get_state(agent.adapter.config_for("order-4471"))
     assert state.values["status"] == "rejected"
-    # Section 18.1: the envelope's action wins the merge, so the graph sees how the
-    # wait was settled ("timeout"), with the declared default's other keys intact.
+    # Section 18.1 as amended: the graph sees the default its author wrote.
     assert state.values["decision"] == {
-        "action": "timeout",
+        "action": "reject",
         "reason": "no response within P3D",
     }
+    # The record, meanwhile, says a timer did it.
+    assert agent.wait().action == "timeout"
+    assert agent.wait().actor == "system:timer"
     assert agent.wait().status == "resumed"
     assert "expired" in agent.announce.transitions()
 

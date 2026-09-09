@@ -159,7 +159,7 @@ authoriser, the IAM role. Pretending otherwise would be worse than not trying.
 **A UI.** Envelopes carry `tags`, which become SNS message attributes, so filter policies
 route to whatever already exists. The agent never learns your service is there.
 
-**Cross-framework generality, yet.** `FrameworkAdapter` is four methods and the core
+**Cross-framework generality, yet.** `FrameworkAdapter` is five methods and the core
 imports no framework, so Strands or Pydantic AI is an afternoon. But v0.1 ships one
 adapter that is genuinely tested rather than four that are plausible.
 
@@ -168,16 +168,55 @@ adapter that is genuinely tested rather than four that are plausible.
 natively and feed `SendTaskSuccess` output back to `dispatch()` unchanged. Nothing in the
 core prevents it.
 
-## The one framework bug we absorb
+## LangGraph 1.2.x caveat: `tasks[*].interrupts` over-reports
 
-LangGraph's `get_state().tasks[*].interrupts` over-reports: after resuming one of two
-parallel interrupts, the *finished* task still advertises its interrupt id
-(langgraph #4796 / #6792). A naive `still_pending()` would therefore say "yes, still
-parked" about an interrupt the graph has already moved past.
+**This is the most important thing in this document if you are porting the adapter,
+upgrading LangGraph, or writing a `FrameworkAdapter` of your own.**
 
-`task.result` is the discriminator — populated for a finished task, `None` for a parked
-one — and `LangGraphAdapter.still_pending()` checks both. The behaviour is pinned by a
-test, so if LangGraph fixes it we find out from a failure rather than from silence.
+Verified against **langgraph 1.2.11**. After resuming one of two parallel interrupts, the
+*finished* task still advertises its interrupt id (langgraph #4796 / #6792). Observed,
+verbatim, from the spike suite:
 
-It is a second line of defence in any case. The first is the status compare-and-set in
-`dispatch()`, which rejects a redelivered answer before the graph is ever invoked.
+```text
+resumed = 2b5c8373 (node 'na');  still parked = e893eec0 (node 'nb')
+task 'na'   interrupts=['2b5c8373'] result={'a': {'ok': 1}} error=None
+task 'nb'   interrupts=['e893eec0'] result=None            error=None
+get_state().next = ('nb',)
+```
+
+Three fields, and they disagree. `next` says only `nb` is pending. `task.result` says the
+same — populated for the finished task, `None` for the parked one. `tasks[*].interrupts`
+lists **both**.
+
+The obvious `still_pending()` reads `tasks[*].interrupts`, and would therefore report an
+interrupt as still parked when the node that raised it has already run to completion —
+which means resuming a node that already finished. That is precisely the double-side-effect
+this library exists to prevent, so the adapter uses **`task.result` alongside the interrupt
+id**, and treats a task that has produced a result as done.
+
+`next` is the other honest signal, and agrees; `task.result` is used because it answers the
+question per-interrupt rather than per-superstep.
+
+The behaviour is pinned two ways, so a LangGraph release that changes it **fails loudly**
+rather than silently altering ours:
+
+* `test_known_bug_tasks_over_report_after_a_partial_parallel_resume` asserts the bug still
+  reproduces. If LangGraph fixes it, that test fails and the workaround can go.
+* the spike suite writes its observations to `reports/langgraph-spike-observations.txt`
+  from a fixture whose teardown runs **pass or fail**, so the record of what the framework
+  actually did survives a failing assertion.
+
+Two consolations. Replaying a resume LangGraph has already applied does *not* re-run the
+node — verified and pinned. And this is a second line of defence anyway: the first is the
+status compare-and-set in `dispatch()`, which rejects a redelivered answer before the graph
+is ever invoked.
+
+### The related one: "applied" is not "persisted"
+
+`dispatch()` marks a start message applied *before* the graph consumes it, so a first run
+that dies before LangGraph writes a checkpoint leaves a message recorded as applied against
+a thread with nothing to resume from — and replaying it with `input=None` gets
+`EmptyInputError`. `FrameworkAdapter.has_checkpoint(thread_id)` is what separates the two
+cases (REQUIREMENTS §18.5); on LangGraph it is a `checkpoint_id` **or** non-empty `values`,
+because a thread that interrupted in its first superstep can have the former without the
+latter.

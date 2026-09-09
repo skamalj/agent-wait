@@ -222,16 +222,56 @@ def test_a_payload_cannot_override_the_envelopes_action(rig: Rig) -> None:
     assert rig.reload(wait).action == "reject"
 
 
-def test_a_timeout_default_cannot_override_the_timeout_action(rig: Rig) -> None:
-    """Same rule on the timeout side: a mapping default gets `action: "timeout"` last."""
-    wait = rig.park(policy=approval_policy(default={"action": "approve", "reason": "assumed"}))
+def test_a_timeout_default_reaches_the_graph_as_the_author_wrote_it(rig: Rig) -> None:
+    """Section 18.1 as amended -- and the deliberate asymmetry with the test above.
+
+    A `payload` arrives from outside and is checked against `allowed_actions`, so the
+    envelope's action has to win. A `default` is written by the graph author, in the
+    graph, next to the question: there is no second party to defend against, and
+    overriding it would hand an author something they did not ask for.
+    """
+    wait = rig.park(policy=approval_policy(default={"action": "reject", "reason": "assumed"}))
 
     outcome = rig.timeout(wait)
 
     assert isinstance(outcome, Resume)
-    assert outcome.command == {"resume_map": {"int-1": {"action": "timeout", "reason": "assumed"}}}, (
-        "a default claiming 'approve' must not make a timeout look like an approval"
-    )
+    assert outcome.command == {"resume_map": {"int-1": {"action": "reject", "reason": "assumed"}}}
+
+
+def test_the_audit_trail_still_says_a_timer_did_it(rig: Rig) -> None:
+    """What the graph is told and what actually happened are different questions, and
+    they get different answers."""
+    wait = rig.park(policy=approval_policy(default={"action": "reject"}))
+
+    rig.timeout(wait)
+
+    settled = rig.reload(wait)
+    assert settled.action == "timeout"
+    assert settled.actor == "system:timer"
+    detail = rig.announce.of("expired")[0].transition_detail
+    assert detail["action"] == "timeout"
+    assert detail["actor"] == "system:timer"
+
+
+def test_a_default_with_no_action_gets_one(rig: Rig) -> None:
+    """The only case where anything is added: the author said nothing about an action."""
+    wait = rig.park(policy=approval_policy(default={"reason": "no response"}))
+
+    outcome = rig.timeout(wait)
+
+    assert isinstance(outcome, Resume)
+    assert outcome.command == {"resume_map": {"int-1": {"action": "timeout", "reason": "no response"}}}
+
+
+def test_a_human_answer_still_cannot_smuggle_an_action(rig: Rig) -> None:
+    """Guards the asymmetry from the other side: relaxing the default must not have
+    relaxed the answer path."""
+    wait = rig.park(policy=approval_policy(allowed_actions=("reject",)))
+
+    outcome = rig.answer(wait, "reject", answer_id="a", payload={"action": "approve"})
+
+    assert isinstance(outcome, Resume)
+    assert outcome.command == {"resume_map": {"int-1": {"action": "reject"}}}
 
 
 def test_a_non_mapping_timeout_default_passes_through_unchanged(rig: Rig) -> None:

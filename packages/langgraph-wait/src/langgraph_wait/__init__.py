@@ -3,7 +3,7 @@
     from langgraph_wait import ask, LangGraphAdapter
 
 Two pieces. `ask()` goes in your node, in place of `interrupt()`. `LangGraphAdapter`
-goes into the `WaitRuntime`, and gives the core the four things it needs to park an
+goes into the `WaitRuntime`, and gives the core the five things it needs to park an
 interrupt and resume it days later on another machine.
 """
 
