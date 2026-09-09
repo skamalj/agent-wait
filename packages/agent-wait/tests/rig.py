@@ -60,6 +60,9 @@ class StubAdapter:
     def __init__(self) -> None:
         self.pending: set[str] = set()
         self.resumes: list[tuple[str, Any]] = []
+        # Section 18.5: threads the imaginary framework has persisted something for. A
+        # thread absent from this set models a run that died before its first checkpoint.
+        self.checkpointed: set[str] = set()
 
     def extract(self, result: Any, config: Any) -> list[PendingInterrupt]:
         if isinstance(result, list) and all(isinstance(r, PendingInterrupt) for r in result):
@@ -72,6 +75,9 @@ class StubAdapter:
 
     def still_pending(self, wait: Wait) -> bool:
         return wait.interrupt_id in self.pending
+
+    def has_checkpoint(self, thread_id: str) -> bool:
+        return thread_id in self.checkpointed
 
     def config_for(self, thread_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": thread_id}}
@@ -129,6 +135,9 @@ class Rig:
     ) -> RegisterResult:
         for pending in interrupts:
             self.adapter.pending.add(pending.interrupt_id)
+        # A run that got as far as raising an interrupt has, by definition, been
+        # checkpointed (section 18.5).
+        self.adapter.checkpointed.add(thread_id)
         return self.runtime.register(interrupts, self.adapter.config_for(thread_id), thread_id)
 
     def park(self, thread_id: str = "order-4471", **kwargs: Any) -> Wait:
@@ -173,7 +182,16 @@ class Rig:
         )
 
     def finish(self, thread_id: str = "order-4471") -> RegisterResult:
-        """The graph ran to completion: no interrupts left."""
+        """The graph ran to completion: no interrupts left, and state was persisted."""
+        self.adapter.checkpointed.add(thread_id)
+        return self.runtime.register([], self.adapter.config_for(thread_id), thread_id)
+
+    def crashed(self, thread_id: str = "order-4471") -> RegisterResult:
+        """The graph raised before the framework persisted anything.
+
+        This is what `make_run_handler`'s `finally` does on the error path (section 18.3):
+        `register()` still runs, so the lease is released -- but no checkpoint exists.
+        """
         return self.runtime.register([], self.adapter.config_for(thread_id), thread_id)
 
     def reload(self, wait: Wait) -> Wait:

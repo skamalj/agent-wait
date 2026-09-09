@@ -16,4 +16,4 @@ def review(state):
 ```
 
 `ask()` wraps `langgraph.types.interrupt()`; `LangGraphAdapter(graph)` gives the core
-the four things it needs to park and resume that interrupt.
+the five things it needs to park and resume that interrupt.

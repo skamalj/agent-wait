@@ -1,4 +1,4 @@
-"""`LangGraphAdapter` -- the four methods the core needs, and nothing else.
+"""`LangGraphAdapter` -- the five methods the core needs, and nothing else.
 
 The core never imports LangGraph. Everything framework-specific lives here, which is
 also where the framework's rough edges get handled.
@@ -31,6 +31,11 @@ asserts all of this, so we find out if a future version changes it.
 4. **Interrupts raised inside a subgraph** surface on the parent's `__interrupt__` with
    a stable id, and the parent's `get_state()` reports them against the subgraph node's
    task. `subgraphs=True` was not needed. Resuming by id works through the parent.
+5. **"Applied" is not "persisted"** (section 18.5). `dispatch()` marks a start message
+   applied before the graph consumes it, so a first run that dies before LangGraph writes
+   a checkpoint leaves a message recorded as applied against a thread with nothing to
+   resume from -- and `invoke(None, config)` on it raises `EmptyInputError`.
+   `has_checkpoint()` below is what separates that from an ordinary redelivery.
 """
 
 from __future__ import annotations
@@ -85,6 +90,19 @@ class LangGraphAdapter:
         state = self.graph.get_state(config)
         configurable = (state.config or {}).get("configurable", {})
         return str(configurable.get("checkpoint_id") or "")
+
+    def has_checkpoint(self, thread_id: str) -> bool:
+        """Section 18.5. Has the checkpointer kept anything for this thread?
+
+        Both signals are checked because they fail in different directions. A thread that
+        has never run returns a snapshot with no `checkpoint_id` *and* empty `values`; a
+        thread whose first superstep interrupted before writing any channel has a
+        `checkpoint_id` but may still have empty `values`. Either one on its own would
+        misclassify a real case.
+        """
+        state = self.graph.get_state(self.config_for(thread_id))
+        configurable = (getattr(state, "config", None) or {}).get("configurable", {})
+        return bool(configurable.get("checkpoint_id")) or bool(getattr(state, "values", None))
 
     # ------------------------------------------------------------------ resume
     def build_resume(self, wait: Wait, resume_value: Any) -> Command:

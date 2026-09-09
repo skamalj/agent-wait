@@ -435,17 +435,39 @@ envelope's `action` (`reject`) and pass, and the graph would then read `approve`
 resume value. The envelope's `action` is the authorisation-checked field and must therefore
 be the one the graph sees.
 
-The same rule applies on the timeout path:
+> ~~The same rule applies on the timeout path: when `policy.default` is a mapping,
+> `{**default, "action": "timeout"}`.~~
+>
+> **Superseded by §18.1a below.** The timeout path is *not* the same case: a `default` is
+> written by the graph author, not received from a third party, so there is nothing to
+> defend against and the author's value stands. §18.1 governs the answer path only.
 
-- when `policy.default` **is a mapping**: `{**default, "action": "timeout"}`;
-- when it **is not** a mapping (a string, a number, a list, `None`): pass it through
-  **unchanged** — the author asked for that exact value, and wrapping it would surprise them.
+### 18.1a Addendum — a timeout default keeps its own action
 
-*Consequence, noted deliberately:* a policy declaring `default={"action": "reject", …}` now
-resumes with `action="timeout"`, not `"reject"`. The `action` field records **how the wait
-was settled**, and a timeout is a timeout; the default's other keys survive untouched, so
-carry intent in a `reason` field rather than in `action`. Graphs should route on their own
-positive condition (`action == "approve"`) rather than enumerating negative ones.
+The merge-order correction in §18.1 applies to the **answer** path only. On the timeout
+path it was wrong, and is hereby reversed.
+
+The argument for `{**payload, "action": action}` is that `payload` arrives from an external
+party and is checked against `allowed_actions`, so the authorisation-checked field has to
+be the one the graph sees. A `default` is not that. It is declared by the graph author, in
+the graph, next to the question. There is no second party to defend against, and overriding
+it hands an author something they did not ask for.
+
+Rule for `policy.default` on timeout:
+
+- **a mapping** → the resume value is the default **exactly as declared**;
+- **a mapping with no `"action"` key** → add `"action": "timeout"`;
+- **not a mapping** → pass through unchanged.
+
+So `default={"action": "reject", "reason": …}` reaches the graph as `action="reject"`.
+
+The audit trail is unaffected, and is where "what happened" is recorded: the wait record
+and every announce carry `action="timeout"` and `actor="system:timer"`. *What the graph is
+told* and *what happened* are two different questions, and they get two different answers.
+
+The answer path is untouched — an inbound `payload` still cannot override the envelope's
+`action`, and `test_a_human_answer_still_cannot_smuggle_an_action` guards that from the
+other side.
 
 ### 18.2 `on_timeout="fail"` — a reason of its own
 
@@ -488,3 +510,37 @@ the API reference under "runtime operations" — *not* in the README quickstart,
 `ask()` / `dispatch()` / `register()`.
 
 The constraint that stands unchanged: **no new entry point, and no new pluggable interface.**
+
+### 18.5 A first-run crash must not lose the input
+
+`dispatch()` records a start message as applied in §4.1.1, **before** the graph consumes
+it. "Applied" therefore means *we started on this message*, not *the framework kept the
+result*. If the first run dies before the framework persists anything, the redelivery is
+correctly recognised as a replay and invoked with `input=None` — and the framework has no
+state to resume from. On LangGraph that is `EmptyInputError`, and the thread is stuck until
+the message reaches the dead-letter queue.
+
+**Do not move the write into `register()`.** That opens the opposite and worse hole: a
+crash *after* the checkpoint but *before* `register()` would leave the message unrecorded,
+and the redelivery would re-apply the input as a second turn.
+
+The write stays in `dispatch()`. One check is added: when a start message is already marked
+applied, `dispatch()` asks the adapter whether the framework has any state for the thread.
+
+- `has_checkpoint(thread_id)` **true** → `Start(input=None)`, exactly as before;
+- `has_checkpoint(thread_id)` **false** → the first run died before anything was
+  persisted, so nothing was in fact applied → `Start(input=payload["input"])`.
+
+`FrameworkAdapter` gains a fifth method:
+
+```python
+def has_checkpoint(self, thread_id: str) -> bool: ...
+```
+
+For LangGraph: a `checkpoint_id` on `get_state(config).config`, **or** non-empty
+`get_state(config).values`. Both are checked because they fail in different directions — a
+thread that interrupted in its first superstep can have the former without the latter.
+
+Conformance test: `test_rule_14_first_run_crash_before_checkpoint`, crash-injected, plus
+`test_rule_14_once_checkpointed_the_input_is_not_reapplied` so the fix cannot quietly undo
+rule 3.

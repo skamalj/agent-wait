@@ -303,8 +303,12 @@ class WaitStoreConformance:
         outcome = rig.timeout(wait)
 
         assert isinstance(outcome, Resume)
-        # Section 18.1: a mapping default gets `action: "timeout"` merged in last.
-        assert outcome.command == {"resume_map": {"int-1": {"action": "timeout", "reason": "no response"}}}
+        # Section 18.1 as amended: the author's default reaches the graph as written.
+        assert outcome.command == {"resume_map": {"int-1": {"action": "reject", "reason": "no response"}}}
+        # ...while the audit trail still records that a timer did it.
+        settled = rig.reload(wait)
+        assert settled.action == "timeout"
+        assert settled.actor == "system:timer"
         assert rig.reload(wait).status == "expired"
         assert "expired" in rig.announce.transitions()
 
@@ -365,6 +369,70 @@ class WaitStoreConformance:
 
         assert isinstance(outcome, Resume)
         assert rig.reload(wait).status == "expired"
+
+    # ------------------------------------------------------------------ rule 14
+    @pytest.mark.conformance
+    def test_rule_14_first_run_crash_before_checkpoint(self, rig: Rig) -> None:
+        """Section 18.5. The first run dies before the framework persists anything.
+
+        `dispatch()` marks a start message applied *before* the graph runs, so "applied"
+        means "we started on this", not "the framework kept the result". Replaying such a
+        message with `input=None` hands the framework a thread it has never heard of.
+        """
+        message = {"thread_id": "order-4471", "input": {"amount": 41000}, "message_id": "evt-1"}
+
+        first = rig.runtime.dispatch(message)
+        assert isinstance(first, Start)
+        assert first.input == {"amount": 41000}
+
+        # The graph raised. register() still runs (rule 18.3) and releases the lease, but
+        # nothing was checkpointed.
+        rig.crashed()
+        assert rig.adapter.has_checkpoint("order-4471") is False
+
+        redelivered = rig.runtime.dispatch(message)
+
+        assert isinstance(redelivered, Start)
+        assert redelivered.input == {"amount": 41000}, "nothing was persisted, so the input has to go back in"
+
+    @pytest.mark.conformance
+    def test_rule_14_once_checkpointed_the_input_is_not_reapplied(self, rig: Rig) -> None:
+        """The other half: the ordinary redelivery must still replay from the checkpoint,
+        or rule 3 is undone."""
+        message = {"thread_id": "order-4471", "input": {"amount": 41000}, "message_id": "evt-1"}
+        rig.runtime.dispatch(message)
+        rig.crashed()
+
+        # The retry gets the input back, and this time the graph reaches a checkpoint.
+        assert rig.runtime.dispatch(message).input == {"amount": 41000}  # type: ignore[union-attr]
+        rig.finish()
+
+        third = rig.runtime.dispatch(message)
+
+        assert isinstance(third, Start)
+        assert third.input is None, "now there is state to resume from"
+
+    @pytest.mark.conformance
+    def test_rule_14_crash_injection_never_loses_the_input(self) -> None:
+        """Kill the process at each write of the first dispatch, then redeliver."""
+        probe = CrashStore(self.make_store())
+        probe_rig = Rig(store=probe)
+        message = {"thread_id": "order-4471", "input": {"amount": 41000}, "message_id": "evt-1"}
+        probe_rig.runtime.dispatch(message)
+        writes = probe.writes
+
+        for crash_at in range(1, writes + 1):
+            store = CrashStore(self.make_store(), crash_at=crash_at)
+            rig = Rig(store=store)
+
+            with contextlib.suppress(Boom):
+                rig.runtime.dispatch(message)
+            store.disarm()
+
+            redelivered = rig.runtime.dispatch(message)
+
+            assert isinstance(redelivered, Start), f"crash #{crash_at} produced {redelivered}"
+            assert redelivered.input == {"amount": 41000}, f"crash at write #{crash_at} lost the input"
 
     # ------------------------------------------------------------------ rule 7
     @pytest.mark.conformance
