@@ -16,6 +16,7 @@ ignore.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from agent_wait import EntryPoint, LogAnnounce, TokenCodec, WaitRuntime
@@ -32,6 +33,13 @@ from langgraph_wait import LangGraphAdapter
 
 from refund_agent.dynamo_checkpointer import DynamoDBSaver
 from refund_agent.graph import build_graph
+
+# The Lambda runtime leaves the root logger at WARNING, so a library logging at INFO is
+# silent in production -- which is exactly when you want to know why a message was
+# ignored. Raising the level on our own loggers is enough; the records still reach the
+# handler the runtime installed.
+for _name in ("agent_wait", "agent_wait_aws"):
+    logging.getLogger(_name).setLevel(os.environ.get("AGENT_WAIT_LOG_LEVEL", "INFO").upper())
 
 queue_url = os.environ["AGENT_WAIT_QUEUE_URL"]
 

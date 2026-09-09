@@ -384,21 +384,26 @@ def scenario_d(dep: Deployment, journal: Journal) -> None:
     journal.check(name, "the sweeper re-announced it", repaired is not None)
     if repaired is None:
         return
-    journal.check(name, "the world was told after all", len(dep.announcements(until=1)) >= 1)
+    # Read the re-announcement once and hold on to it. The token inside is the whole
+    # point of the repair, and a second receive_message would find the queue drained.
+    reannounced = [e for e in dep.announcements(until=1) if e["type"] == "wait.created"]
+    journal.check(name, "the world was told after all", len(reannounced) >= 1)
     journal.check(name, "and the timeout was armed", _await(lambda: wait_id in dep.schedules(), 90), wait_id)
-
-    # It is a real wait again, so it must be answerable.
-    envelope = next((e for e in dep.announcements(timeout=20, until=1) if e["type"] == "wait.created"), None)
-    if envelope is None:
-        # already consumed above; re-read the token by re-announcing is not possible, so
-        # just confirm the repaired state and stop.
-        journal.note(name, "envelope already consumed; the repaired state is the assertion")
+    if not reannounced:
         return
+
+    # The repair only counts if the wait is answerable again.
     dep.answer(
         thread,
-        {"token": envelope["token"], "action": "approve", "payload": {}, "answer_id": "click-d"},
+        {
+            "token": reannounced[0]["token"],
+            "action": "approve",
+            "payload": {},
+            "answer_id": "click-d",
+        },
     )
     journal.check(name, "the repaired wait is answerable", dep.await_refund_count(thread, 1) == 1)
+    journal.check(name, "and it refunded exactly once", dep.refund_count(thread) == 1)
 
 
 # ============================================================== helpers
