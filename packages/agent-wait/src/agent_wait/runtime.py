@@ -199,7 +199,9 @@ class WaitRuntime:
     ) -> Resume | Ignore:
         now = self.clock.now()
         is_timeout = action == "timeout"
-        resume_value = wait.policy.default if is_timeout else self._resume_value(action, payload)
+        resume_value = (
+            self._timeout_value(wait.policy.default) if is_timeout else self._resume_value(action, payload)
+        )
 
         # 2.6 -- the one conditional write per transition (rule 2). A human click and the
         # scheduler firing in the same second both land here; exactly one returns True.
@@ -225,10 +227,14 @@ class WaitRuntime:
         self._announce(settled, "expired" if is_timeout else "answered")
 
         if is_timeout and settled.policy.on_timeout == "fail":
-            # The author asked for the thread to be abandoned rather than resumed.
+            # Section 18.2. The author asked for the thread to be abandoned rather than
+            # resumed. Two conditional writes, not one: `pending -> expired` above has
+            # already fired the `expired` announce (so the schedule is deleted and the
+            # world is told), and only then does `expired -> failed` close it out. The
+            # graph is never invoked.
             self.store.transition(settled.wait_id, expect="expired", to="failed", updated_at=now)
             self._release_lease(settled.thread_id)
-            return Ignore("expired", "on_timeout='fail': the wait was marked failed, not resumed")
+            return Ignore("failed", "on_timeout='fail': the wait expired and was marked failed")
 
         # 2.8 -- rule 7. The thread may already have moved past this interrupt, in which
         # case invoking the graph again would repeat a side effect that already happened.
@@ -250,13 +256,29 @@ class WaitRuntime:
 
     @staticmethod
     def _resume_value(action: str, payload: Mapping[str, Any]) -> Any:
-        """Section 4.1.9: the answer envelope's `payload`, plus `action`."""
+        """Section 4.1.9, as amended by section 18.1: the answer envelope's `payload`,
+        with `action` merged in **last**.
+
+        The merge order is the whole point. `{"action": action, **payload}` would let a
+        sender smuggle `{"payload": {"action": "approve"}}` past a wait that only permits
+        `reject`: the allowed-actions check would see `reject` and pass, and the graph
+        would then read `approve`. The envelope's `action` always wins.
+        """
         body = payload.get("payload")
         if isinstance(body, Mapping):
-            return {"action": action, **dict(cast("Mapping[str, Any]", body))}
+            return {**dict(cast("Mapping[str, Any]", body)), "action": action}
         if body is None:
             return {"action": action}
         return {"action": action, "payload": body}
+
+    @staticmethod
+    def _timeout_value(default: Any) -> Any:
+        """Section 18.1: a mapping default gets `action: "timeout"` merged in last, for
+        the same reason. A non-mapping default is passed through untouched -- the author
+        asked for that exact value, and wrapping it would be a surprise."""
+        if isinstance(default, Mapping):
+            return {**dict(cast("Mapping[str, Any]", default)), "action": "timeout"}
+        return default
 
     # ==================================================================== register
     def register(self, result: Any, config: Any, thread_id: str) -> RegisterResult:

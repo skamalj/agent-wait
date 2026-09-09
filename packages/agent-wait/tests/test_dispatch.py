@@ -157,6 +157,7 @@ def test_every_ignore_reason_is_reachable() -> None:
         "parked",
         "unknown_payload",
         "lease_held",
+        "failed",
     }
     assert set(get_args(IgnoreReason)) == covered
 
@@ -199,3 +200,58 @@ def test_actor_is_recorded_but_never_trusted(rig: Rig) -> None:
     rig.answer(wait, "approve", answer_id="a", actor="anyone-at-all")
 
     assert rig.reload(wait).actor == "anyone-at-all"
+
+
+# ------------------------------------------------- section 18.1: the merge order
+def test_a_payload_cannot_override_the_envelopes_action(rig: Rig) -> None:
+    """The reason §18.1 fixes the merge order.
+
+    Under `{"action": action, **payload}` a sender could smuggle
+    `{"payload": {"action": "approve"}}` past a wait that only permits `reject`: the
+    allowed-actions check sees `reject` and passes, and the graph then reads `approve`.
+    The envelope's action must win.
+    """
+    wait = rig.park(policy=approval_policy(allowed_actions=("reject",)))
+
+    outcome = rig.answer(wait, "reject", answer_id="a", payload={"action": "approve", "note": "hi"})
+
+    assert isinstance(outcome, Resume)
+    assert outcome.command == {"resume_map": {"int-1": {"action": "reject", "note": "hi"}}}, (
+        "the smuggled action must not survive the merge"
+    )
+    assert rig.reload(wait).action == "reject"
+
+
+def test_a_timeout_default_cannot_override_the_timeout_action(rig: Rig) -> None:
+    """Same rule on the timeout side: a mapping default gets `action: "timeout"` last."""
+    wait = rig.park(policy=approval_policy(default={"action": "approve", "reason": "assumed"}))
+
+    outcome = rig.timeout(wait)
+
+    assert isinstance(outcome, Resume)
+    assert outcome.command == {"resume_map": {"int-1": {"action": "timeout", "reason": "assumed"}}}, (
+        "a default claiming 'approve' must not make a timeout look like an approval"
+    )
+
+
+def test_a_non_mapping_timeout_default_passes_through_unchanged(rig: Rig) -> None:
+    """§18.1: the author asked for that exact value; wrapping it would be a surprise."""
+    for default in ("rejected", 42, ["a", "b"], None):
+        rig = Rig(store=InMemoryWaitStore())
+        wait = rig.park(policy=approval_policy(default=default))
+
+        outcome = rig.timeout(wait)
+
+        assert isinstance(outcome, Resume)
+        assert outcome.command == {"resume_map": {"int-1": default}}
+
+
+def test_the_other_default_keys_survive(rig: Rig) -> None:
+    wait = rig.park(policy=approval_policy(default={"reason": "no response", "by": "policy"}))
+
+    outcome = rig.timeout(wait)
+
+    assert isinstance(outcome, Resume)
+    assert outcome.command == {
+        "resume_map": {"int-1": {"action": "timeout", "reason": "no response", "by": "policy"}}
+    }

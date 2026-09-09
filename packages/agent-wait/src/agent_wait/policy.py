@@ -25,6 +25,7 @@ _ISO_DURATION = re.compile(
     r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$"
 )
 
+
 def _no_tags() -> dict[str, str]:
     """A typed factory: bare `dict` leaves the field's value type unknown."""
     return {}

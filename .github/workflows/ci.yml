@@ -1,0 +1,103 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Nothing in CI may reach a real account. moto is the only AWS here, and these make a
+  # stray real call fail loudly instead of silently picking up an instance role.
+  AWS_ACCESS_KEY_ID: testing
+  AWS_SECRET_ACCESS_KEY: testing
+  AWS_DEFAULT_REGION: ap-south-1
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Sync the workspace
+        run: uv sync --all-packages
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Types (strict on agent_wait)
+        run: uv run pyright
+
+      - name: Tests
+        # The four local levels of REQUIREMENTS section 12: unit, conformance over three
+        # stores, LangGraph integration, and AWS-local over moto. The end-to-end level is
+        # opt-in via AGENT_WAIT_E2E=1 and needs a deployed stack, so it does not run here.
+        run: >
+          uv run pytest
+          --junitxml=reports/junit.xml
+          --cov=agent_wait --cov=langgraph_wait --cov=agent_wait_aws
+          --cov-report=term-missing --cov-report=xml:reports/coverage.xml
+
+      - name: Coverage floor
+        # REQUIREMENTS section 12: at least 85% on agent_wait and langgraph_wait.
+        run: >
+          uv run python -c "
+          import xml.etree.ElementTree as ET, sys;
+          root = ET.parse('reports/coverage.xml').getroot();
+          rate = float(root.get('line-rate')) * 100;
+          print(f'total line coverage: {rate:.1f}%');
+          sys.exit(0 if rate >= 85 else 1)"
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: reports/
+          if-no-files-found: warn
+
+  synth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: uv python install 3.12
+      - run: uv sync --all-packages
+
+      - name: Build the Lambda bundle
+        run: uv run python scripts/build_lambda_bundle.py
+
+      - name: cdk synth
+        # Proves the stack is deployable without deploying it. No credentials needed.
+        working-directory: packages/agent-wait-aws/cdk
+        env:
+          CDK_DEFAULT_ACCOUNT: "111111111111"
+          CDK_DEFAULT_REGION: ap-south-1
+        run: |
+          export PATH="$GITHUB_WORKSPACE/.venv/bin:$PATH"
+          npx --yes aws-cdk@2 synth --quiet \
+            -c stackName=agent-wait-ci \
+            -c bundlePath="$GITHUB_WORKSPACE/build/lambda"

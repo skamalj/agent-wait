@@ -410,3 +410,81 @@ Package names are final: `agent-wait`, `langgraph-wait`, `agent-wait-aws` (all c
 - `TEST_REPORT.md` committed at repo root and its contents also sent as the session's final message.
 - `docs/` complete enough that a third-party team could write a consumer from `message-formats.md` and `integrating-a-consumer.md` alone.
 - Open questions, deviations and recommended v0.2 items listed at the end of `TEST_REPORT.md`.
+
+---
+
+## 18. Amendments (2026-09-09)
+
+Rulings issued by the project manager after the v0.1 build, in response to the open
+questions in `TEST_REPORT.md` §7. These amend the sections they name; where they conflict
+with the text above, **§18 wins**.
+
+### 18.1 Resume value — merge order corrected
+
+`payload` in §4.1.9 is confirmed to mean the **answer envelope's `payload` field**, not the
+whole envelope. But the merge order given there is wrong:
+
+```python
+{"action": action, **payload}  # WRONG — a payload key can override the action
+{**payload, "action": action}  # CORRECT — the envelope's action always wins
+```
+
+Under the original order a sender could smuggle `{"payload": {"action": "approve"}}` past a
+wait whose `allowed_actions` is `("reject",)`: the allowed-actions check would inspect the
+envelope's `action` (`reject`) and pass, and the graph would then read `approve` out of the
+resume value. The envelope's `action` is the authorisation-checked field and must therefore
+be the one the graph sees.
+
+The same rule applies on the timeout path:
+
+- when `policy.default` **is a mapping**: `{**default, "action": "timeout"}`;
+- when it **is not** a mapping (a string, a number, a list, `None`): pass it through
+  **unchanged** — the author asked for that exact value, and wrapping it would surprise them.
+
+*Consequence, noted deliberately:* a policy declaring `default={"action": "reject", …}` now
+resumes with `action="timeout"`, not `"reject"`. The `action` field records **how the wait
+was settled**, and a timeout is a timeout; the default's other keys survive untouched, so
+carry intent in a `reason` field rather than in `action`. Graphs should route on their own
+positive condition (`action == "approve"`) rather than enumerating negative ones.
+
+### 18.2 `on_timeout="fail"` — a reason of its own
+
+The `Ignore.reason` enum in §4 is extended with **`"failed"`**. (The enum was the project
+manager's to freeze; this is its correct extension, not a deviation from it.)
+
+When a wait whose policy says `on_timeout="fail"` expires:
+
+1. `pending → expired` by conditional write, **and the `expired` announce fires** — so the
+   schedule is deleted and the world is told the wait is over;
+2. `expired → failed` by a second conditional write;
+3. `dispatch()` returns `Ignore("failed")`;
+4. **the graph is never invoked**;
+5. the thread lease is released.
+
+Two writes, not one, precisely so that step 1's announce still happens. Conformance test:
+`test_rule_13_on_timeout_fail`.
+
+### 18.3 The thread lease across an immediate resume
+
+Holding the lease is correct: releasing it between applying a parked answer and running the
+resume would open exactly the window the lease exists to close. §4.2.5 is amended to read:
+
+> Release the thread lease **unless `immediate_resume` is set**; the `register()` call that
+> follows the immediate resume releases it.
+
+`make_run_handler` must **guarantee that the follow-up `register()` runs even if the resumed
+`invoke()` raises** — `try`/`finally`, so the lease is always released. Otherwise a lease
+held by a dead invocation blocks every redelivery of that thread for its full duration, and
+a transient error looks like a permanently stuck thread.
+
+### 18.4 `envelope_for()` accepted as support API
+
+The three-function promise is about **what a graph author and a handler must call**. The
+sweeper and the announce adapters are ours, and may use more.
+
+`WaitRuntime.envelope_for(wait, transition)`, `WaitRuntime.sweep()` and
+`WaitRuntime.cancel(wait_id, reason)` are kept as **documented support methods**, listed in
+the API reference under "runtime operations" — *not* in the README quickstart, which stays
+`ask()` / `dispatch()` / `register()`.
+
+The constraint that stands unchanged: **no new entry point, and no new pluggable interface.**
