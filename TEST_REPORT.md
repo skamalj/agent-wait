@@ -134,46 +134,48 @@ record of *what it actually did* survives the failure. Committed at
 ```text
 langgraph 1.2.11 · langgraph-checkpoint 4.2.0
 Recorded by packages/langgraph-wait/tests/test_spike_langgraph.py, verbatim.
-Interrupt ids are truncated to 8 chars; they are regenerated every run.
+Interrupt and checkpoint ids are 32 random hex chars, regenerated every run;
+they are labelled <id-A>, <id-B>, ... in first-seen order so that identical
+behaviour records as identical bytes. Everything else is as observed.
 
 == PARALLEL: two interrupts in one superstep ==
-  result['__interrupt__']  = [('c4a1248b', {'which': 'a'}), ('259568a8', {'which': 'b'})]
-  get_state().tasks        = [('na', ['c4a1248b'], None), ('nb', ['259568a8'], None)]
+  result['__interrupt__']  = [('<id-A>', {'which': 'a'}), ('<id-B>', {'which': 'b'})]
+  get_state().tasks        = [('na', ['<id-A>'], None), ('nb', ['<id-B>'], None)]
   get_state().next         = ('na', 'nb')
-  checkpoint_id            = 1f1ac443
+  checkpoint_id            = <id-C>
   side-effect log          = []
 
 == PARALLEL: after resuming ONE of the two ==
-  resumed                  = db5baed8 with {'ok': 1}
+  resumed                  = <id-D> with {'ok': 1}
   result keys              = ['__interrupt__', 'a']
-  result['__interrupt__']  = ['db3b5266']
-  the other interrupt      = db3b5266
+  result['__interrupt__']  = ['<id-E>']
+  the other interrupt      = <id-E>
   state values             = {'a': {'ok': 1}}
   side-effect log          = ['a']
 
 == PARALLEL: the #4796/#6792 bug, as observed ==
-  resumed                  = dc856799 (node 'na'); still parked = 03239521 (node 'nb')
-  task 'na'   interrupts=['dc856799'] result={'a': {'ok': 1}} error=None
-  task 'nb'   interrupts=['03239521'] result=None error=None
+  resumed                  = <id-F> (node 'na'); still parked = <id-G> (node 'nb')
+  task 'na'   interrupts=['<id-F>'] result={'a': {'ok': 1}} error=None
+  task 'nb'   interrupts=['<id-G>'] result=None error=None
   get_state().next         = ('nb',)
   -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.
   -> task.result is the discriminator, and is what still_pending() reads.
 
 == PARALLEL: replaying an already-applied resume ==
-  applied fb6c536e twice; side-effect log = ['a']
+  applied <id-H> twice; side-effect log = ['a']
   -> LangGraph does not re-run a node whose resume it already applied.
 
 == SUBGRAPH: an interrupt raised two levels down ==
-  result['__interrupt__']  = [('244d5b98', {'inner': True})]
-  get_state().tasks        = [('sub', ['244d5b98'], None)]
-  get_state(subgraphs=True) = [('sub', ['244d5b98'])]
+  result['__interrupt__']  = [('<id-I>', {'inner': True})]
+  get_state().tasks        = [('sub', ['<id-I>'], None)]
+  get_state(subgraphs=True) = [('sub', ['<id-I>'])]
   get_state().next         = ('sub',)
-  checkpoint_id            = 1f1ac443
+  checkpoint_id            = <id-J>
   -> it surfaces on the PARENT's __interrupt__, against the subgraph node's task.
   -> subgraphs=True was not needed, so one adapter handles both shapes.
 
 == SUBGRAPH: resuming it through the parent ==
-  resumed 08d668ef via the parent graph
+  resumed <id-K> via the parent graph
   final state values       = {'v': {'done': True}}
   get_state().tasks        = []
   -> resuming by id through the parent works; no subgraph-specific path needed.
@@ -565,6 +567,16 @@ they are recorded here as rulings, not deviations.
     (`store/memory.py`, `tests/rig.py`, and both conformance entry points). Reworded to
     "every conformance rule" so the count cannot go stale again. No behaviour change; the
     rules table in §2 is the count of record.
+
+26. **The evidence artifact is now byte-stable, also decided after sign-off.**
+    `reports/langgraph-spike-observations.txt` printed raw interrupt ids, which LangGraph
+    regenerates every run — so every `pytest` left a meaningless diff in the working tree
+    and the quotation of it in this report went stale the moment anyone ran the suite.
+    Ids are now labelled `<id-A>`, `<id-B>`, … in first-seen order. What the observation is
+    *about* — which task advertises which interrupt, and what each one's `result` says — is
+    unchanged and still recorded exactly; only the opaque identifier is stabilised, so the
+    same behaviour records as the same bytes and the quote stays valid. Verified by running
+    the spike twice and diffing.
 
 ## 6. Known gaps
 
