@@ -75,10 +75,19 @@ def ask(question: Any, policy: WaitPolicy | None = None) -> Any:
     On resume: returns the resume value for this interrupt (the answer envelope's `payload`,
     plus `action`)."""
 
+
 # agent_wait  (core)
 class WaitRuntime:
-    def __init__(self, *, adapter: FrameworkAdapter, store: WaitStore, tokens: TokenCodec,
-                 announce: Sequence[AnnounceAdapter], entry_point: EntryPoint, clock: Clock = SystemClock()): ...
+    def __init__(
+        self,
+        *,
+        adapter: FrameworkAdapter,
+        store: WaitStore,
+        tokens: TokenCodec,
+        announce: Sequence[AnnounceAdapter],
+        entry_point: EntryPoint,
+        clock: Clock = SystemClock(),
+    ): ...
 
     def dispatch(self, payload: Mapping[str, Any]) -> Start | Resume | Ignore:
         """Call BEFORE invoking the graph, on every inbound payload at the agent's entry point."""
@@ -93,13 +102,35 @@ class WaitRuntime:
 
 ```python
 @dataclass(frozen=True)
-class Start:   thread_id: str; input: Any | None; config: dict          # input None ⇒ invoke(None) (re-applied message)
+class Start:
+    thread_id: str
+    input: Any | None
+    config: dict  # input None ⇒ invoke(None) (re-applied message)
+
+
 @dataclass(frozen=True)
-class Resume:  thread_id: str; command: Any; config: dict; wait: Wait   # command = adapter.build_resume(...)
+class Resume:
+    thread_id: str
+    command: Any
+    config: dict
+    wait: Wait  # command = adapter.build_resume(...)
+
+
 @dataclass(frozen=True)
-class Ignore:  reason: Literal["duplicate", "already_answered", "token_invalid", "expired",
-                               "not_pending", "action_not_allowed", "binding_mismatch",
-                               "parked", "unknown_payload", "lease_held"]; detail: str = ""
+class Ignore:
+    reason: Literal[
+        "duplicate",
+        "already_answered",
+        "token_invalid",
+        "expired",
+        "not_pending",
+        "action_not_allowed",
+        "binding_mismatch",
+        "parked",
+        "unknown_payload",
+        "lease_held",
+    ]
+    detail: str = ""
 ```
 
 ### 4.1 `dispatch()` algorithm (normative)
@@ -131,12 +162,12 @@ To keep the handler simple, `register()` returns `RegisterResult(envelopes: list
 ```python
 @dataclass(frozen=True)
 class WaitPolicy:
-    timeout: str | int | None = None             # ISO-8601 duration ("P3D", "PT2H") or seconds
+    timeout: str | int | None = None  # ISO-8601 duration ("P3D", "PT2H") or seconds
     on_timeout: Literal["resume_default", "fail"] = "resume_default"
-    default: Any = None                          # the resume value when on_timeout == resume_default
+    default: Any = None  # the resume value when on_timeout == resume_default
     allowed_actions: tuple[str, ...] = ("resume",)
-    tags: Mapping[str, str] = field(default_factory=dict)   # routing hints for announce adapters
-    correlation: Mapping[str, str] | None = None            # {"provider": ..., "id": ...} for external-job waits
+    tags: Mapping[str, str] = field(default_factory=dict)  # routing hints for announce adapters
+    correlation: Mapping[str, str] | None = None  # {"provider": ..., "id": ...} for external-job waits
 ```
 
 Plain `interrupt(value)` without `ask()` must still work: treated as a wait with default policy and `question = value`.
@@ -217,8 +248,10 @@ The agent's entry point receives 7.2 and 7.3 (and 7.2 with `action: "timeout"` f
 ```python
 class AnnounceAdapter(Protocol):
     name: str
+
     def announce(self, envelope: WaitEnvelope, transition: Transition) -> None:
         """Fire-and-forget. MUST NOT raise into the caller; log and return. Called for every transition."""
+
     def supports(self, transition: Transition) -> bool: ...
 ```
 
@@ -255,7 +288,7 @@ class FrameworkAdapter(Protocol):
 
 ### 9.3 Hosting for v0.1: Lambda + SQS FIFO (`agent_wait_aws.make_run_handler`)
 ```python
-handler = make_run_handler(graph, runtime)     # returns an AWS Lambda handler (event, context)
+handler = make_run_handler(graph, runtime)  # returns an AWS Lambda handler (event, context)
 ```
 Responsibilities of the wrapper: iterate SQS records; call `runtime.dispatch(body)`; on `Start` → `graph.invoke(input, config)`, on `Resume` → `graph.invoke(command, config)`, on `Ignore` → ack (or report batch item failure only for `lease_held`); extend the message's visibility timeout on a background thread while the graph runs; call `runtime.register(...)`; loop on `immediate_resume`; return `batchItemFailures` for records that must be retried. Must be safe with batch size 1 and `MessageGroupId = thread_id`.
 

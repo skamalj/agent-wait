@@ -1,0 +1,63 @@
+[project]
+name = "agent-wait-workspace"
+version = "0.1.0"
+description = "Workspace root for agent-wait (not published)."
+requires-python = ">=3.12"
+dependencies = [
+    "agent-wait",
+    "langgraph-wait",
+    "agent-wait-aws",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+agent-wait = { workspace = true }
+langgraph-wait = { workspace = true }
+agent-wait-aws = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "moto[dynamodb,sqs,sns,events,scheduler]>=5.0",
+    "boto3>=1.35",
+    "boto3-stubs[dynamodb,sqs,sns,events,scheduler,secretsmanager]>=1.35",
+    "langgraph>=1.2,<2",
+    "langgraph-checkpoint-sqlite>=2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["packages/agent-wait/tests", "packages/langgraph-wait/tests", "packages/agent-wait-aws/tests", "examples"]
+addopts = "-q --strict-markers"
+markers = [
+    "conformance: correctness rules from REQUIREMENTS section 10",
+    "e2e: requires real AWS; opt in with AGENT_WAIT_E2E=1",
+    "spike: empirical probes of LangGraph behaviour",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["reference", "packages/agent-wait-aws/cdk/cdk.out"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["B008", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["E501"]
+
+[tool.pyright]
+include = ["packages/agent-wait/src"]
+exclude = ["reference", "**/node_modules", "**/__pycache__"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
