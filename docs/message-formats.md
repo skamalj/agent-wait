@@ -1,7 +1,8 @@
 # Message formats
 
-This is the contract. Two JSON documents: one agent-wait sends, one it receives. A team
-that has read only this file should be able to write a working consumer.
+This is the contract. Three JSON documents: one agent-wait sends, two it can be given
+back. A team that has read only this file should be able to write a working consumer *and*
+a working host.
 
 Everything else in this repository is an implementation detail. These are not.
 
@@ -10,14 +11,14 @@ Everything else in this repository is an implementation detail. These are not.
 ## 1. The wait envelope (outbound)
 
 Emitted by every announce adapter, on every transition. This is what arrives on your SNS
-topic, your SQS queue or your EventBridge bus.
+topic, your queue, your bus, or as a row in your table.
 
 ```json
 {
   "type": "wait.created",
   "event_id": "01JAV3K2R8Q9WZ7M4X1YB6N0PD",
-  "wait_id": "01JAV3K2R7C5H8F2G9J4K1L3M6",
   "thread_id": "order-4471",
+  "interrupt_id": "a1b2c3d4e5f60718",
   "question": {
     "kind": "refund_approval",
     "order_id": "order-4471",
@@ -26,81 +27,89 @@ topic, your SQS queue or your EventBridge bus.
   },
   "allowed_actions": ["approve", "reject"],
   "expires_at": "2026-09-12T09:00:00Z",
-  "token": "aw1.k1.01JAV3K2R7C5H8F2G9J4K1L3M6.1789344000.9f2a1c4e7b0d3856.approve+reject.KpQ3rZ1xN8vL0aTfB6cWdYs",
+  "default": { "action": "reject", "reason": "no response within P3D" },
   "reply_to": { "kind": "sqs", "url": "https://sqs.ap-south-1.amazonaws.com/…/agent-runs.fifo" },
+  "reply_with": {
+    "thread_id": "order-4471",
+    "interrupt_id": "a1b2c3d4e5f60718",
+    "answer": null
+  },
   "correlation": null,
-  "tags": { "approver_group": "finance" },
-  "transition_detail": {}
+  "tags": { "approver_group": "finance" }
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `type` | `wait.created`, `wait.answered`, `wait.expired`, `wait.resumed`, `wait.cancelled` |
-| `event_id` | ULID, unique per transition. **Dedupe on this.** |
-| `wait_id` | ULID identifying the wait itself. Stable across its whole life. |
+| `type` | `wait.created` or `wait.resumed`. Nothing else. |
+| `event_id` | ULID, fresh on every publish. Useful in logs. **Not** the deduplication key. |
 | `thread_id` | The agent's conversation identity. |
+| `interrupt_id` | The question's identity, stable for as long as the question stands. |
 | `question` | Whatever the agent asked. Opaque to every adapter; only your UI interprets it. |
-| `allowed_actions` | The only actions that will be accepted. Anything else is refused. |
-| `expires_at` | RFC 3339 UTC, or `null` when the wait has no timeout. |
-| `token` | The credential for answering. See below. |
+| `allowed_actions` | Which answers are meaningful. **Advisory** — see below. |
+| `expires_at` | RFC 3339 UTC, or `null` when the wait has no timeout. **Advisory.** |
+| `default` | What the graph's author said to assume if nobody answers. **Advisory.** |
 | `reply_to` | Where to send the answer. The agent's own entry point. |
-| `correlation` | `{"provider": …, "id": …}` when the wait is tied to an external job; otherwise `null`. |
+| `reply_with` | A filled-in reply. Copy it, set `answer`, post it to `reply_to`. |
+| `correlation` | `{"provider": …, "id": …}` when the wait is tied to an external job; else `null`. |
 | `tags` | Routing hints from the policy. Become SNS message attributes, so filter policies can use them. |
-| `transition_detail` | Empty on `created`. On `answered`/`expired`: `action`, `actor`, `answered_at`. On `cancelled`: `reason`. |
+
+### Deduplicate on `type` + `interrupt_id`
+
+Not on `event_id`. The same question is republished whenever a start message is
+redelivered or an operator calls `republish()`, and each publish mints a fresh
+`event_id` — so deduplicating on it would show the same approval twice.
+
+`interrupt_id` is stable across re-entry and resume-from-checkpoint (verified against
+langgraph 1.2.11 in `test_spike_langgraph.py`), and `type` keeps a close from cancelling
+out its own open. The `WaitEnvelope.dedupe_key` property is exactly `"{type}:{interrupt_id}"`.
+
+### "Advisory" means the library does not enforce it
+
+`allowed_actions`, `expires_at` and `default` are published so that *you* can act on
+them. agent-wait does not check an answer against `allowed_actions`, does not notice when
+`expires_at` passes, and never sends `default` itself. It cannot: since v0.2 no answer
+passes through this library. See `migrating-from-0.1.md`.
 
 ### What a consumer should do with it
 
-1. **Dedupe on `event_id`.** Announce delivery is at-least-once, and the sweeper
-   deliberately re-announces a wait it thinks was never heard.
-2. **Render `question` and offer exactly `allowed_actions`.** Do not invent a third
-   button; it will be refused.
-3. **Send the answer to `reply_to`.** Do not hardcode an endpoint — `reply_to` is how the
-   agent tells you where it listens, and it can differ per environment.
-4. **Treat `wait.answered` / `wait.expired` / `wait.cancelled` as "close the ticket".**
-   They may arrive because *somebody else* answered, or because the timeout fired.
+1. **Dedupe on `type` + `interrupt_id`.**
+2. **Render `question` and offer exactly `allowed_actions`.** Nothing will refuse a
+   third button, which is precisely why you should not draw one.
+3. **Answer by copying `reply_with`** — set `answer`, post it to `reply_to`. Do not
+   hardcode an endpoint; `reply_to` is how the agent tells you where it listens, and it
+   differs per environment.
+4. **Treat `wait.resumed` as "close the ticket".** It may arrive because somebody else
+   answered, or because a timeout sweep sent the default.
 
 ---
 
-## 2. The answer envelope (inbound)
+## 2. The answer message (inbound)
 
-Send this to `reply_to`. For an SQS FIFO entry point, use `MessageGroupId = thread_id`.
+Send this to `reply_to`. On an SQS FIFO entry point, use `MessageGroupId = thread_id`.
 
 ```json
 {
-  "token": "aw1.k1.01JAV3K2R7C5H8F2G9J4K1L3M6.1789344000.9f2a1c4e7b0d3856.approve+reject.KpQ3rZ1xN8vL0aTfB6cWdYs",
-  "action": "approve",
-  "payload": { "note": "within budget" },
-  "actor": "priya@corp",
-  "answer_id": "click-9f1"
+  "thread_id": "order-4471",
+  "interrupt_id": "a1b2c3d4e5f60718",
+  "answer": { "action": "approve", "note": "within budget" }
 }
 ```
 
 | Field | Required | Meaning |
 |---|---|---|
-| `token` | yes | Copied verbatim from the envelope. Identifies and authorises. |
-| `action` | no (default `resume`) | Must be in `allowed_actions`. `timeout` is reserved for the scheduler. |
-| `payload` | no | Merged with `action` to form the value the agent's `ask()` returns. `action` is merged **last**, so a `payload` containing its own `action` key does not override it. |
-| `actor` | no | **Informational only.** It grants nothing — see below. |
-| `answer_id` | **yes** | Your idempotency id. |
+| `thread_id` | yes | Which conversation. |
+| `interrupt_id` | yes | Which question. Its presence is what makes this a resume. |
+| `answer` | yes | **Returned verbatim** by the `ask()` call that raised the question. |
 
-### `answer_id` is the one that catches people out
+`answer` is whatever you want it to be. The library does not merge anything into it, does
+not add an `action` key, and does not validate it — a string, a number and a nested object
+are all fine, and the node receives exactly what you sent. If your graph reads
+`decision["action"]`, then send `{"action": "approve"}`.
 
-It is required, and it must be stable for a given user intent. Send the same
-`answer_id` twice and the second is a `duplicate` — success, nothing happens twice. Send
-a *different* one after the wait is settled and you get `already_answered` — a conflict,
-because a second person is trying to make a different decision.
-
-Use something derived from the interaction: the button-click id, the Slack message ts,
-`sha256(user + wait_id + action)`. Do **not** use a fresh UUID per HTTP retry, or a retry
-will read as a second person disagreeing.
-
-### `actor` is not authentication
-
-`actor` is a label for the audit trail. Anyone who holds the token can put any string
-there. Authentication is your entry point's job — the queue policy, the API Gateway
-authoriser, the IAM role that is allowed to `SendMessage`. agent-wait deliberately does
-not pretend otherwise.
+There is no token and no `answer_id`. Authentication is your entry point's business — the
+queue policy, the API Gateway authoriser, the IAM role allowed to `SendMessage`. agent-wait
+deliberately does not pretend otherwise.
 
 ---
 
@@ -111,59 +120,62 @@ The ordinary "please run" message, unchanged from whatever you had before.
 ```json
 {
   "thread_id": "order-4471",
-  "input": { "order_id": "order-4471", "amount": 41000 },
-  "message_id": "evt-return-4471"
+  "input": { "order_id": "order-4471", "amount": 41000 }
 }
 ```
 
-`message_id` is optional; on SQS the `messageId` is used when it is absent. It is what
-makes a redelivered start message replay from the checkpoint instead of applying the same
-input twice.
-
-**Answers and starts arrive at the same place.** `dispatch()` tells them apart by the
-presence of `token`. There is no second endpoint to build or secure.
+**Starts and answers arrive at the same place.** There is no second endpoint to build or
+secure.
 
 ---
 
-## 4. The token
+## 4. Telling them apart
 
+```python
+if message.get("interrupt_id"):
+    agent.invoke(resume_command(message), message["thread_id"])   # a resume
+else:
+    agent.invoke(message["input"], message["thread_id"])          # a start
 ```
-aw1.<kid>.<wait_id>.<exp>.<binding16>.<actions>.<mac>
+
+`interrupt_id` present → resume. Absent → start. That is the whole rule, and it holds by
+construction rather than by convention: the envelope ships a filled-in `reply_with` that
+already contains the key, and the consumer echoes it back.
+
+`langgraph_wait.is_answer(message)` is that check as a named function, and
+`resume_command(message)` builds the `Command`. Both are pure functions.
+
+### One more line you need
+
+A start message for a thread that is **already parked** must not be re-invoked with its
+original input — LangGraph would treat it as a fresh turn and ask the question again under
+a new `interrupt_id`, which no consumer could deduplicate away.
+
+```python
+if agent.pending(thread_id):
+    agent.republish(thread_id)      # a redelivery; repair the announce, do not re-ask
+else:
+    agent.invoke(message["input"], thread_id)
 ```
 
-`mac` is `base64url(HMAC-SHA256(key[kid], everything-before-the-mac))[:27]`.
-
-Three things are worth knowing:
-
-* **It authorises one wait, with those actions, until that instant.** It is not a
-  session, not a user, not a bearer token for anything else.
-* **Its `exp` is not the wait's timeout.** Tokens live seven days by default; the wait
-  might time out in two hours or never. The store decides what is final — a token can
-  verify perfectly and still be refused because the wait was answered an hour ago.
-* **Treat it as a secret.** Anyone holding it can answer that one question. It is safe in
-  an email or a Slack message to the approver group; it is not safe in a public channel,
-  a URL that gets logged, or a screenshot.
+`examples/refund_agent/handler.py` is the whole router, with both guards, in a dozen lines.
 
 ---
 
-## 5. What you get back
+## 5. What you own
 
-`dispatch()` classifies every inbound payload. Consumers do not see these directly, but
-the operator watching the logs does, and they are the vocabulary for "why did nothing
-happen":
+The list is short, and it is the price of the library being this small.
 
-| Reason | What it means | Should you retry? |
+| Concern | Who does it now | How |
 |---|---|---|
-| `duplicate` | Same `answer_id`, already applied. | No — this is success. |
-| `already_answered` | A *different* answer got there first, or it timed out. | No. Tell the user. |
-| `token_invalid` | Malformed, wrong key, or tampered. | No. |
-| `expired` | The token's own seven days are up. | No. Ask the agent to re-announce. |
-| `binding_mismatch` | The question changed since the token was minted. | No. The link is stale. |
-| `action_not_allowed` | Not in `allowed_actions`. | No. |
-| `not_pending` | The thread already moved past this interrupt. | No — this is success. |
-| `parked` | The wait does not exist *yet*; the answer was stored and will be applied. | No. |
-| `unknown_payload` | Not a start and not an answer — e.g. no `answer_id`. | No. Fix the sender. |
-| `failed` | The wait timed out and its policy said `on_timeout: "fail"`. The thread was abandoned on purpose, not resumed. | No. |
-| `lease_held` | Another worker is running this thread right now. | **Yes.** |
+| Deciding start vs resume | you | `interrupt_id` present or not |
+| Not re-asking a parked thread | you | `pending()` then `republish()` |
+| Enforcing `expires_at` | you | a scheduled sweep over your open questions, sending `default` |
+| Authenticating an answer | you | the queue policy / authoriser in front of `reply_to` |
+| Rejecting a stale answer | you | `pending()` before invoking; see `is_still_open()` |
+| Serialising two answers to one question | your transport | SQS FIFO with `MessageGroupId = thread_id` |
 
-`lease_held` is the only one worth retrying. Everything else is a decision, not a failure.
+The last one is the one to think hardest about. `pending()` narrows the window but does
+not close it: two answers a millisecond apart can both see the question open. On a FIFO
+queue keyed by thread they are delivered in order and the second finds it closed. Without
+that ordering guarantee, you need a conditional write of your own.

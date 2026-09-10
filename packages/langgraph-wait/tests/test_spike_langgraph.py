@@ -1,4 +1,4 @@
-"""The spike REQUIREMENTS section 9.2 asks for: what does LangGraph actually do?
+"""The spike: what does LangGraph actually do?
 
 The design assumes two things about interrupts. If either is false, the idempotency key
 is not stable and rule 1 collapses. So they are asserted, not assumed -- and the third
@@ -235,10 +235,10 @@ def test_known_bug_tasks_over_report_after_a_partial_parallel_resume() -> None:
     """langgraph #4796 / #6792, reproduced.
 
     After resuming one of two parallel interrupts, `get_state().tasks` still lists the
-    *finished* task's interrupt id. A `still_pending()` built on `task.interrupts` alone
+    *finished* task's interrupt id. A `pending()` built on `task.interrupts` alone
     therefore returns True for an interrupt the graph has already moved past.
 
-    `task.result` is the discriminator, and `LangGraphAdapter.still_pending()` uses it.
+    `task.result` is the discriminator, and `LangGraphAdapter.pending()` uses it.
     If this test ever fails, LangGraph has fixed the bug and the workaround can go.
     """
     log: list[str] = []
@@ -260,7 +260,7 @@ def test_known_bug_tasks_over_report_after_a_partial_parallel_resume() -> None:
         )
     record(f"  get_state().next         = {graph.get_state(config).next}")
     record("  -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.")
-    record("  -> task.result is the discriminator, and is what still_pending() reads.")
+    record("  -> task.result is the discriminator, and is what pending() reads.")
     record()
 
     reported = {i.id for task in tasks.values() for i in task.interrupts}

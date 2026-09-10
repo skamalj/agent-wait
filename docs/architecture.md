@@ -1,222 +1,175 @@
 # Architecture
 
-## The problem
-
-Every agent framework can pause. LangGraph has `interrupt()`, Strands has interrupts,
-Pydantic AI has `DeferredToolRequests`, ADK has long-running tools. None of them owns what
-happens *between* the pause and the resume when the gap is three days and the process
-that paused is gone.
-
-The maintainers have said so, in writing. LangChain forum #2541: scheduling and timing are
-"left to the application layer … last write wins". claude-agent-sdk-python #871: "we don't
-want to keep the subprocess alive while waiting for the user". crewAI #2051: async
-human-in-the-loop is Enterprise-only. langgraph #8039: after a crash, whether a node is
-replayed or re-executed is host-dependent — so you cannot lean on checkpoint resume alone
-for side-effect safety.
-
-So everybody builds the same thing badly: a table of pending approvals, a cron job that
-might fire twice, a webhook with no idempotency, and a refund that occasionally goes out
-twice. agent-wait is that layer, built once.
-
 ## The shape
 
 ```mermaid
-flowchart TB
-    subgraph agent["the agent (your code, unchanged)"]
-        NODE["node calls<br/><b>ask(question, policy)</b>"]
-        GRAPH["graph.invoke()"]
+flowchart LR
+    subgraph agent["your process"]
+        Q[["entry point<br/>(one queue)"]] --> R{route}
+        R -->|no interrupt_id| I["agent.invoke(input, thread)"]
+        R -->|interrupt_id| RS["agent.invoke(resume_command, thread)"]
+        I --> G[["graph.invoke()"]]
+        RS --> G
+        G -.->|ask&#40;&#41; parks a node| CP[(checkpointer)]
+        G --> D{"diff pending()<br/>before vs after"}
     end
 
-    subgraph runtime["agent-wait"]
-        DISPATCH["<b>dispatch(payload)</b><br/>start? resume? ignore?"]
-        REGISTER["<b>register(result)</b><br/>persist · announce"]
-        STORE[("WaitStore<br/>conditional writes")]
-    end
-
-    subgraph world["the world"]
-        SLACK["approvals UI<br/>Slack · email · ticket"]
-        SCHED["EventBridge Scheduler<br/><i>delivery to the future</i>"]
-    end
-
-    ENTRY{{"the agent's existing entry point<br/>SQS FIFO · HTTP · Step Functions"}}
-
-    ENTRY -->|"every inbound payload"| DISPATCH
-    DISPATCH -->|"Start · Resume"| GRAPH
-    DISPATCH -->|"Ignore: duplicate, stale,<br/>forged, already answered"| ACK["acknowledge<br/>and do nothing"]
-    GRAPH --> NODE
-    NODE -->|"interrupt"| GRAPH
-    GRAPH -->|"result"| REGISTER
-    REGISTER <--> STORE
-    DISPATCH <--> STORE
-    REGISTER -->|"wait envelope"| SLACK
-    REGISTER -->|"arm the timeout"| SCHED
-    SLACK -->|"answer envelope"| ENTRY
-    SCHED -->|"answer envelope,<br/>action=timeout, 3 days later"| ENTRY
-
-    classDef quiet fill:#f6f6f6,stroke:#bbb,color:#444
-    class ACK quiet
+    D -->|new| CREATED["wait.created"]
+    D -->|gone| RESUMED["wait.resumed"]
+    CREATED & RESUMED --> A[["announce adapters"]]
+    A --> W(["the world:<br/>topic, queue, bus, table"])
+    W --> H([a human, or a timeout sweep])
+    H -->|"copy reply_with,<br/>set answer, post to reply_to"| Q
 ```
 
-Read the arrows into `ENTRY`. The approvals UI and the scheduler send **the same kind of
-message to the same place** — the queue the agent already had. That is the central idea,
-and everything else follows from it.
+Two arrows are worth staring at.
 
-## What that buys
+**The loop closes on the same queue it started from.** An answer is not a special kind of
+traffic arriving at a special endpoint; it is a message on the agent's ordinary entry
+point, and `interrupt_id` is what distinguishes it. There is no answer API to build,
+secure, scale or pay for.
 
-**No second entry point.** No answer API to build, secure, monitor and rate-limit. One
-queue policy, one authoriser, one thing that can be misconfigured.
+**The checkpointer is the only state.** agent-wait writes nothing. What a thread is parked
+on is read from the framework every time it is asked, which is why two processes cannot
+disagree about it and why there is no repair pass.
 
-**Timeouts stop being special.** A timeout is an answer with `action: "timeout"`,
-delivered by a messenger that is three days slow. It goes through the identical code path
-as a human clicking Approve — which is why "the timer fired at the same instant somebody
-clicked" needs no handling at all. It is one conditional write; exactly one wins.
+## The publisher
 
-**No timer Lambda.** `SchedulerAnnounce` is an *announce adapter*. Telling the future is
-the same act as telling Slack, so it lives behind the same one-method interface.
-
-**Ordering is free.** SQS FIFO with `MessageGroupId = thread_id` gives one in-flight
-message per conversation. That is the answer to LangChain forum #772 — "how do I ensure
-only one thread_id runs at a time across many pods?" — unanswered for fourteen months.
-
-## The three functions
+`WaitPublisher.invoke()` is the whole library:
 
 ```python
-decision = ask(question, policy)  # in your node, instead of interrupt()
+before = {p.interrupt_id: p for p in adapter.pending(thread_id)}
+result = adapter.invoke(value, config)
+after  = {p.interrupt_id: p for p in adapter.pending(thread_id)}
 
-outcome = runtime.dispatch(payload)  # before graph.invoke()
-result = runtime.register(out, config, thread_id)  # after it
+for new in after - before:   publish("created", ...)
+for gone in before - after:  publish("resumed", ...)
 ```
 
-That is the whole public surface, plus the `AnnounceAdapter` protocol and the two
-[message formats](message-formats.md).
+Two `get_state()` reads per invoke. The framework stays the only source of truth, so
+nothing can drift out of sync with it — there is nothing to be out of sync *with*.
 
-### `dispatch()` — the gate
+That also determines what can be published at all. A wait has exactly two observable
+states, parked and not, so there are exactly two transitions. v0.1's `answered`, `expired`
+and `cancelled` were transitions of a *record*, describing the library's opinion about an
+answer it had accepted; with no record and no answer, they have nothing to describe.
 
-Every inbound payload goes through it, and its job is to say **no** correctly. A payload
-with no `token` is a start. A payload with one is an answer, and it survives: token
-verification (no store read, so forged tokens cost one HMAC), the binding check (this
-token is for *this* question), the allowed-actions check, the status check, the thread
-lease, and finally a conditional write.
+## The adapter
 
-It never raises for a bad answer. A double click, a stale approval, a late timer and a
-forged token are all `Ignore` — because a healthy system receives all four every day. Only
-`lease_held` asks the caller to retry.
+Three methods, and one implementation:
 
-### `register()` — the ledger
+```python
+class FrameworkAdapter(Protocol):
+    def config_for(self, thread_id: str) -> dict[str, Any]: ...
+    def invoke(self, value: Any, config: Any) -> Any: ...
+    def pending(self, thread_id: str) -> list[PendingInterrupt]: ...
+```
 
-Called after *every* run, including successful ones, because that is when waits left
-behind by an earlier interrupt get closed out.
+The core never imports LangGraph. `pending()` is where all the framework's sharp edges get
+handled, and there is one that matters.
 
-It computes `sha256(thread_id | interrupt_id | checkpoint_id)` and creates the wait
-idempotently. Crash after the checkpoint but before the announce, and the redelivery finds
-the same wait rather than making a second one. Announce once — `notified_at` is the flag —
-then check whether an answer arrived before the wait existed, and if so apply it straight
-away.
+### LangGraph 1.2.x caveat: `tasks[*].interrupts` over-reports
 
-### The sweeper — the repair pass
-
-`register()` does three things that are not one atomic act: create, announce, arm. A crash
-in between leaves a wait nobody knows about and no timer will fire for — a thread parked
-forever. The sweeper runs every minute, finds pending waits with no `notified_at`, and
-announces them. It needs no graph and no checkpointer; it only ever pushes waits back onto
-the announce path and lets `dispatch()` do the deciding.
-
-## API reference — runtime operations
-
-The three functions above are the whole of what a **graph author and a handler** must
-call. Alongside them `WaitRuntime` carries three **support methods** (REQUIREMENTS §18.4).
-They are ours — the sweeper and operational tooling use them — and they are not part of the
-quickstart. They add no entry point and no pluggable interface.
-
-| Method | What it does | Who calls it |
-|---|---|---|
-| `runtime.sweep(limit=100)` | The repair pass. Re-announces pending waits with no `notified_at`, and re-announces overdue ones so a lost schedule is re-armed. Returns `{"scanned", "announced", "overdue"}`. Every action is idempotent, so it is safe to run every minute forever. | A one-minute EventBridge rule → `make_sweep_handler`. |
-| `runtime.cancel(wait_id, reason="")` | `pending → cancelled`, announced. The `cancelled` announce is what deletes the schedule. Returns `False` if the wait was already settled. Later answers get `already_answered`. | Operational tooling; a control path in your own application. |
-| `runtime.envelope_for(wait, transition)` | Builds the outbound envelope (§7.1) for a wait, minting a fresh token. | The sweeper, when re-announcing. Also useful if you need to re-emit an envelope by hand. |
-
-Two more exist for the hosting layer rather than for you: `runtime.refresh_lease(thread_id)`,
-which `make_run_handler`'s heartbeat calls while a long graph runs, and the `owner` attribute
-that identifies this process to the lease.
-
-Everything else on `WaitRuntime` is private and will change without notice.
-
-## Why the store is the only hard dependency
-
-`WaitStore` needs exactly one primitive: **a conditional write that tells you whether you
-won**. `transition()` returns a bool, not an exception, and every state change goes through
-it. The loser re-reads and reports what actually happened.
-
-That is why there are three implementations — in-memory, SQLite, DynamoDB — and one
-conformance suite that runs against all three. A rule that passes only against the
-in-memory store has not been tested, it has been asserted.
-
-## What is deliberately not here
-
-**Authentication.** `actor` in an answer envelope is a label. Anyone holding the token can
-write any string there. Trust comes from the entry point — the queue policy, the API
-authoriser, the IAM role. Pretending otherwise would be worse than not trying.
-
-**A UI.** Envelopes carry `tags`, which become SNS message attributes, so filter policies
-route to whatever already exists. The agent never learns your service is there.
-
-**Cross-framework generality, yet.** `FrameworkAdapter` is five methods and the core
-imports no framework, so Strands or Pydantic AI is an afternoon. But v0.1 ships one
-adapter that is genuinely tested rather than four that are plausible.
-
-**Step Functions hosting.** Designed for, not built. A Park state
-(`sqs:sendMessage.waitForTaskToken` with `TimeoutSecondsPath`) would announce and time out
-natively and feed `SendTaskSuccess` output back to `dispatch()` unchanged. Nothing in the
-core prevents it.
-
-## LangGraph 1.2.x caveat: `tasks[*].interrupts` over-reports
-
-**This is the most important thing in this document if you are porting the adapter,
-upgrading LangGraph, or writing a `FrameworkAdapter` of your own.**
-
-Verified against **langgraph 1.2.11**. After resuming one of two parallel interrupts, the
-*finished* task still advertises its interrupt id (langgraph #4796 / #6792). Observed,
-verbatim, from the spike suite:
+Verified against langgraph 1.2.11 (langgraph
+[#4796](https://github.com/langchain-ai/langgraph/issues/4796) /
+[#6792](https://github.com/langchain-ai/langgraph/issues/6792)). With two interrupts in
+one superstep, resume one, and the *finished* task still lists its interrupt id:
 
 ```text
-resumed = <id-F> (node 'na');  still parked = <id-G> (node 'nb')
+resumed                  = <id-F> (node 'na'); still parked = <id-G> (node 'nb')
 task 'na'   interrupts=['<id-F>'] result={'a': {'ok': 1}} error=None
-task 'nb'   interrupts=['<id-G>'] result=None            error=None
-get_state().next = ('nb',)
+task 'nb'   interrupts=['<id-G>'] result=None error=None
+get_state().next         = ('nb',)
 ```
 
-Three fields, and they disagree. `next` says only `nb` is pending. `task.result` says the
-same — populated for the finished task, `None` for the parked one. `tasks[*].interrupts`
-lists **both**.
+`next` says `('nb',)` and `task 'na'` has a `result` — but `na` still advertises its
+interrupt. The discriminator is **`task.result`**, which holds a finished task's return
+value and is `None` only while the task is genuinely parked. `pending()` skips any task
+with a result.
 
-The obvious `still_pending()` reads `tasks[*].interrupts`, and would therefore report an
-interrupt as still parked when the node that raised it has already run to completion —
-which means resuming a node that already finished. That is precisely the double-side-effect
-this library exists to prevent, so the adapter uses **`task.result` alongside the interrupt
-id**, and treats a task that has produced a result as done.
+Getting this wrong is not subtle in its consequences. `pending()` decides which questions
+are published as open, which answers are accepted as still live, and what `republish()`
+re-announces. Reading `tasks[*].interrupts` naively would leave an answered approval
+showing as open forever, and would accept a second approval for a node that already ran.
 
-`next` is the other honest signal, and agrees; `task.result` is used because it answers the
-question per-interrupt rather than per-superstep.
+`test_a_resumed_parallel_sibling_is_not_reported_as_pending` asserts *both* the correct
+behaviour and the raw over-report, so a LangGraph release that fixes the bug fails the
+test rather than passing silently. The message on that assertion says the filter may then
+be removable.
 
-The behaviour is pinned two ways, so a LangGraph release that changes it **fails loudly**
-rather than silently altering ours:
+### What else was verified rather than assumed
 
-* `test_known_bug_tasks_over_report_after_a_partial_parallel_resume` asserts the bug still
-  reproduces. If LangGraph fixes it, that test fails and the workaround can go.
-* the spike suite writes its observations to `reports/langgraph-spike-observations.txt`
-  from a fixture whose teardown runs **pass or fail**, so the record of what the framework
-  actually did survives a failing assertion.
+`packages/langgraph-wait/tests/test_spike_langgraph.py`, which writes
+`reports/langgraph-spike-observations.txt` on every run, pass or fail:
 
-Two consolations. Replaying a resume LangGraph has already applied does *not* re-run the
-node — verified and pinned. And this is a second line of defence anyway: the first is the
-status compare-and-set in `dispatch()`, which rejects a redelivered answer before the graph
-is ever invoked.
+* **`Interrupt.id` is stable** across `invoke(None, config)` re-entry and across
+  resume-from-checkpoint. Everything about republishing rests on this: if ids churned,
+  every republish would look to a consumer like a new question.
+* **Subgraph interrupts** surface on the parent's state against the subgraph node's task,
+  with a stable id. `subgraphs=True` is not needed, and resuming by id works through the
+  parent.
 
-### The related one: "applied" is not "persisted"
+## Identity and deduplication
 
-`dispatch()` marks a start message applied *before* the graph consumes it, so a first run
-that dies before LangGraph writes a checkpoint leaves a message recorded as applied against
-a thread with nothing to resume from — and replaying it with `input=None` gets
-`EmptyInputError`. `FrameworkAdapter.has_checkpoint(thread_id)` is what separates the two
-cases (REQUIREMENTS §18.5); on LangGraph it is a `checkpoint_id` **or** non-empty `values`,
-because a thread that interrupted in its first superstep can have the former without the
-latter.
+| | value | stable? |
+|---|---|---|
+| `interrupt_id` | LangGraph's | for as long as the question stands |
+| `event_id` | a fresh ULID | no — one per publish |
+| `dedupe_key` | `"{type}:{interrupt_id}"` | yes |
+
+Consumers deduplicate on `dedupe_key`. This is the mechanism that makes republishing safe,
+and republishing is the only recovery path there is, so it carries weight:
+
+* a crash between the invoke and the announce → the redelivered start message finds the
+  thread parked, `republish()` re-announces it with the same key;
+* an announce adapter that was down → same;
+* an adapter added after the question was asked → `republish()` backfills it.
+
+`event_id` exists for logs and for tracing one specific publish. Deduplicating on it would
+defeat the whole scheme, which is why `SqsAnnounce` sends `dedupe_key` as the FIFO
+`MessageDeduplicationId` and why the README says so twice.
+
+## `expires_at` is anchored to the checkpoint
+
+`PendingInterrupt.asked_at` comes from LangGraph's `created_at` on the state snapshot, and
+`expires_at` is `asked_at + timeout`.
+
+It would be simpler to compute `now + timeout` at publish time, and it would be wrong. The
+same question is republished on every redelivery, so a deadline measured from the publish
+walks forward each time — and a thread retried often enough would never expire, which is
+exactly the failure a timeout exists to prevent.
+`test_the_deadline_does_not_walk_forward_on_republish` holds the line.
+
+## The two guards the host has to write
+
+Neither is in the library, both are in `examples/refund_agent/handler.py`, and both are
+one branch:
+
+**A start for a parked thread must republish, not re-invoke.** Re-invoking with the
+original input makes LangGraph run a fresh turn and ask the question again under a *new*
+interrupt id — a duplicate that no `dedupe_key` can catch, because the ids genuinely
+differ. v0.1 got this from a store of applied message ids; v0.2 gets it from
+`if agent.pending(thread_id)`.
+
+**An answer for a closed question must be dropped.** `pending()` answers this against the
+graph's own state, so a double click, a redelivered message and a second approver an hour
+later are all rejected. It narrows the window rather than closing it: two answers in the
+same instant both see the question open. SQS FIFO with `MessageGroupId = thread_id`
+delivers one message per thread at a time, which closes the rest. Without ordering, a
+conditional write of your own goes here.
+
+`docs/migrating-from-0.1.md` has the full list of what moved across that line.
+
+## Failure isolation
+
+`CompositeAnnounce` catches everything an adapter raises and logs it. The contract says
+adapters must not raise; the composite enforces it rather than trusting it, because a
+Slack outage must not fail a refund that has already been decided.
+
+There is no retry and no record of what got through. Recovery is `republish()`, which is
+idempotent by construction — so a retry loop would only be a faster way to do the same
+thing.
+
+If the graph itself raises, nothing is published. Nothing is known: a run that raised has
+not necessarily parked or unparked anything. There is no half-written record to repair,
+which is the advantage of keeping none.

@@ -1,13 +1,21 @@
 # agent-wait-aws
 
-AWS backends for [agent-wait](https://github.com/skamalj/agent-wait):
+Announce adapters for AWS, and the CDK stack. Nothing else — since v0.2 the library keeps
+no state, so there is no store, no key provider and no run handler here.
 
-- `DynamoWaitStore` — single table, every transition a conditional write
-- `SqsAnnounce`, `SnsAnnounce`, `EventBridgeAnnounce` — tell the world
-- `SchedulerAnnounce` — the timeout, as a one-shot EventBridge schedule that delivers
-  the answer to your own entry point
-- `make_run_handler(graph, runtime)` — the Lambda handler, SQS FIFO, visibility
-  heartbeat and partial batch failures included
-- `cdk/` — a deployable stack
+```python
+from agent_wait_aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, SqsAnnounce
+```
 
-Nothing here is a second entry point. The world answers where your agent already listens.
+| Adapter | Where the question lands |
+|---|---|
+| `SnsAnnounce(topic_arn)` | A topic. Policy `tags` become message attributes, so subscription filter policies can route on them. |
+| `SqsAnnounce(queue_url)` | A queue. On FIFO: `MessageGroupId = thread_id`, and `MessageDeduplicationId = dedupe_key`, so a republish is swallowed. |
+| `EventBridgeAnnounce(bus)` | A bus, with the transition as detail-type. Notices partial failures, which `PutEvents` reports inside an HTTP 200. |
+| `DynamoDbAnnounce(table)` | A row. `created` writes it `open`, `resumed` marks it `closed`; a GSI on `status` gives an approvals UI its query with no broker involved. |
+
+Every one of them logs and returns on failure. None of them raises.
+
+`cdk/` deploys the example: a FIFO queue, a topic, one Lambda, the checkpointer's table
+and an approvals table. `scripts/deploy_and_e2e.ps1` builds the bundle, deploys, runs
+`examples/refund_agent/demo_scenarios.py` and tears down.

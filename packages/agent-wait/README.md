@@ -1,29 +1,26 @@
 # agent-wait
 
-Durable waits for agent frameworks. The framework-agnostic core: no cloud SDK, no
-framework import, no I/O it did not ask for.
+The core. No LangGraph, no AWS, no boto3. pyright strict.
 
 ```python
-from agent_wait import WaitRuntime, EntryPoint, InMemoryWaitStore, TokenCodec, LogAnnounce
+from agent_wait import EntryPoint, WaitPolicy, WaitPublisher
 
-runtime = WaitRuntime(
-    adapter=my_framework_adapter,
-    store=InMemoryWaitStore(),
-    tokens=TokenCodec(key_provider),
-    announce=[LogAnnounce()],
-    entry_point=EntryPoint("sqs", queue_url),
-)
+agent = WaitPublisher(adapter, announce=[...], reply_to=EntryPoint("sqs", url))
 
-outcome = runtime.dispatch(payload)  # Start | Resume | Ignore
-...  # invoke your graph
-result = runtime.register(out, config, thread_id)
+agent.invoke(value, thread_id)      # run the graph, publish what it parked on
+agent.pending(thread_id)            # what is it parked on right now?
+agent.republish(thread_id)          # announce it again -- repairs a lost announce
 ```
 
-Two calls, either side of your existing invoke.
+`WaitPolicy` is what a graph author declares at the interrupt site: `timeout`, `default`,
+`allowed_actions`, `tags`, `correlation`. Every field is advisory — this library publishes
+them and enforces none of them.
 
-`WaitRuntime` also carries three **support methods** — `sweep()`, `cancel()` and
-`envelope_for()` — for the repair pass and operational tooling. They are not part of the
-quickstart; see "API reference — runtime operations" in `docs/architecture.md`.
+Two protocols:
 
-See also `docs/integrating-a-consumer.md` and `docs/message-formats.md` at the repository
-root.
+* **`AnnounceAdapter`** — `announce(envelope, transition)` and `supports(transition)`.
+  The only thing you are expected to implement. Must not raise.
+* **`FrameworkAdapter`** — `config_for()`, `invoke()`, `pending()`. Implemented once, in
+  `langgraph-wait`; the protocol is what keeps LangGraph out of this package.
+
+See the repository README, `docs/message-formats.md`, and `docs/architecture.md`.

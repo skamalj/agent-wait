@@ -1,8 +1,8 @@
 # Integrating a consumer
 
-You have been handed an SNS topic (or an EventBridge bus, or a queue) that emits wait
-envelopes, and you need to build the thing a human actually clicks. This is everything you
-need. You do not need to install agent-wait, read its source, or know what LangGraph is.
+You have been handed an SNS topic (or a bus, a queue, or a DynamoDB table) that carries
+wait envelopes, and you need to build the thing a human actually clicks. This is everything
+you need. You do not need to install agent-wait, read its source, or know what LangGraph is.
 
 There are exactly two moves: **listen**, and **reply**.
 
@@ -10,131 +10,139 @@ There are exactly two moves: **listen**, and **reply**.
 
 ## 1. Listen
 
-Subscribe to the topic. You will receive [wait envelopes](message-formats.md#1-the-wait-envelope-outbound).
+Subscribe, and you will receive
+[wait envelopes](message-formats.md#1-the-wait-envelope-outbound).
 
 ```python
 def on_envelope(envelope: dict) -> None:
-    if already_seen(envelope["event_id"]):  # at-least-once delivery
+    key = f"{envelope['type']}:{envelope['interrupt_id']}"
+    if already_seen(key):        # at-least-once delivery, and deliberate republishing
         return
-    mark_seen(envelope["event_id"])
+    mark_seen(key)
 
-    match envelope["type"]:
-        case "wait.created":
-            open_approval(envelope)
-        case "wait.answered" | "wait.expired" | "wait.cancelled":
-            close_approval(envelope["wait_id"], envelope["transition_detail"])
-        case "wait.resumed":
-            pass  # bookkeeping; the agent moved on
+    if envelope["type"] == "wait.created":
+        show_approval(envelope)
+    elif envelope["type"] == "wait.resumed":
+        retract_approval(envelope["interrupt_id"])
 ```
 
-When you open an approval, store three things: `wait_id`, `token`, and `expires_at`.
-Render `question` however suits you, and offer **exactly** the buttons in
-`allowed_actions` — any other action is refused.
+**Deduplicate on `type` + `interrupt_id`, not on `event_id`.** `event_id` is fresh on every
+publish, and the agent deliberately republishes the same question when a message is
+redelivered or an operator repairs a lost announce. Deduplicating on `event_id` would show
+the same approval twice; `interrupt_id` is stable for as long as the question stands.
 
-> **Close the ticket on the terminal events too.** `wait.answered` may arrive because a
-> colleague approved it in a different channel, and `wait.expired` because the timeout
-> fired. If you only ever close on your own button, your queue fills with ghosts.
+Render `question` however suits you — it is opaque to everything in between — and offer
+exactly the buttons in `allowed_actions`. Nothing will refuse a third one, which is
+precisely why you should not draw it.
 
----
+`wait.resumed` means the graph has moved past the question. It may arrive because somebody
+else answered, or because a timeout sweep sent the default. Either way: close the ticket.
 
 ## 2. Reply
 
-Send an [answer envelope](message-formats.md#2-the-answer-envelope-inbound) to
-`reply_to`. That is the agent's own entry point — the same place its ordinary work
-arrives. Do not hardcode it.
+The envelope contains a filled-in reply. Copy it, set `answer`, and post it to `reply_to`.
 
 ```python
-import json, boto3
-
-
-def approve(record, user: str, note: str) -> None:
-    body = {
-        "token": record.token,
-        "action": "approve",
-        "payload": {"note": note},
-        "actor": user,
-        # Stable per click. Not a fresh uuid per HTTP retry.
-        "answer_id": f"{record.wait_id}:{user}:approve",
-    }
-    boto3.client("sqs").send_message(
-        QueueUrl=record.reply_to["url"],
-        MessageBody=json.dumps(body),
-        MessageGroupId=record.thread_id,  # FIFO: one in-flight run per thread
-        MessageDeduplicationId=body["answer_id"],
-    )
+def on_click(envelope: dict, action: str) -> None:
+    body = {**envelope["reply_with"], "answer": {"action": action, "by": current_user()}}
+    send_to(envelope["reply_to"], body)
 ```
 
-That is the integration. There is no acknowledgement to wait for and no second call to
-make.
+That is the whole protocol. Do not construct the message yourself and do not hardcode the
+destination — `reply_to` is how the agent tells you where it listens, and it differs
+between environments.
+
+### `answer` is returned verbatim
+
+Whatever you put in `answer` is exactly what the graph's `ask()` call returns. Nothing is
+merged into it and no fields are added. If the graph reads `decision["action"]`, send
+`{"action": "approve"}`; if it expects a string, send a string.
+
+This is worth stating plainly because it is a trust boundary. The graph will act on what
+you send, and nothing between you and it will second-guess an `action` that is not in
+`allowed_actions`. Validate before you send.
+
+### Answering twice is safe, and answering late is safe
+
+The agent checks whether the thread is still parked on that interrupt before it does
+anything. A double click, a retried HTTP request or a second approver an hour later are all
+dropped. You do not need an idempotency key.
+
+What is **not** guaranteed is two genuinely different answers arriving in the same instant
+— that depends on the agent's transport. Ask whoever runs it; if the entry point is an SQS
+FIFO queue keyed by thread, it is serialised and you are fine.
 
 ---
 
-## 3. The four things that actually go wrong
+## 3. If the questions land in a table instead
 
-### `answer_id` generated per retry
+`DynamoDbAnnounce` writes each question as a row rather than publishing an event, which is
+often a better fit for an approvals UI: you query for open questions instead of maintaining
+your own projection of a topic.
 
-This is the one. `answer_id` is how the agent tells "the same person clicked twice" from
-"a second person disagrees". Derive it from the *intent* — the click, the Slack message
-ts, `sha256(user + wait_id + action)`. If you generate a UUID inside a retry loop, your
-own retry looks like a colleague overruling the decision, and you get
-`already_answered` instead of a clean `duplicate`.
-
-### Assuming a reply means the agent finished
-
-It does not. You are handing the answer to a durable queue; the agent may take a minute,
-or may be resumed on a machine that is not yet running. You will hear about it through
-`wait.answered` and then `wait.resumed`. Do not block a web request on it.
-
-### Treating a duplicate as an error
-
-If the user double-clicks, the second answer is a `duplicate` — that is *success*. Show
-them the same confirmation. If your UI shows an error, users learn to click again.
-
-### Building a second endpoint
-
-You may be tempted to ask for "an API to answer waits". There isn't one, on purpose. The
-world answers where the agent already listens, so there is one thing to secure, one thing
-to monitor, and one ordering guarantee. `reply_to` tells you where that is.
-
----
-
-## 4. Routing without the agent knowing about you
-
-The wait's policy can carry `tags`. They become SNS message attributes, so a subscription
-filter policy can route without a line of code:
-
-```json
-{ "approver_group": ["finance"] }
+```
+pk = "THREAD#order-4471"
+sk = "WAIT#a1b2c3d4e5f60718"
+status = "open" | "closed"
 ```
 
-The agent said `tags={"approver_group": "finance"}` at the interrupt site. It has no idea
-your service exists, and never needs to.
+Everything the envelope carries is on the row, including `reply_with`. A GSI on `status`
+with `expires_at` as the range key gives you both queries you want:
+
+```python
+# everything a human should see
+table.query(IndexName="by_status", KeyConditionExpression=Key("status").eq("open"))
+
+# everything overdue -- see the next section
+table.query(
+    IndexName="by_status",
+    KeyConditionExpression=Key("status").eq("open") & Key("expires_at").lt(now_iso()),
+)
+```
+
+Rows are overwritten in place when a question is republished, so a repair does not create a
+duplicate. `wait.resumed` sets `status = "closed"` rather than deleting the row, so there
+is still something to show when someone asks why the button disappeared.
 
 ---
 
-## 5. Expiry, and what to show the user
+## 4. Somebody has to enforce the timeout
 
-`expires_at` is when the agent will give up and apply its declared default — often
-"reject". Two consequences for your UI:
+**The agent will not.** `expires_at` and `default` are published as information; nothing
+acts on them. If nobody runs a sweep, an unanswered question waits forever.
 
-* Show a countdown. "Decide by Friday 09:00, or this is automatically rejected" is a very
-  different message from "pending".
-* When the deadline passes, expect `wait.expired` and close the item. Do not let a user
-  click Approve on something the agent has already moved past — they will get
-  `already_answered`, and they will be annoyed.
+It may or may not be your job — agree with whoever runs the agent — but it is somebody's,
+and it is about ten lines:
 
-The `token` has its own separate seven-day life. A token can be perfectly valid for a
-wait that was settled an hour ago; the store is what decides, not the token.
+```python
+def sweep(now_iso: str) -> None:
+    for row in open_questions_past(now_iso):
+        send_to(row["reply_to"], {**row["reply_with"], "answer": row["default"]})
+```
+
+Two details that matter:
+
+* **Send `default` unchanged.** The graph's author wrote it next to the question; it is
+  published verbatim so that nothing in the middle rewrites it.
+* **Re-check that the question is still open** immediately before sending, or you race a
+  human answering right at the deadline. Both answers being dropped is fine; the graph
+  resuming twice is not.
+
+A working sweep is `scenario_b` in `examples/refund_agent/demo_scenarios.py`.
 
 ---
 
-## 6. Checklist
+## 5. What the agent guarantees you
 
-- [ ] Dedupe on `event_id`
-- [ ] Store `wait_id`, `token`, `expires_at`
-- [ ] Offer only `allowed_actions`
-- [ ] Send to `reply_to`, never a hardcoded endpoint
-- [ ] `answer_id` stable per user intent
-- [ ] Treat `duplicate` as success
-- [ ] Close on `wait.answered` / `wait.expired` / `wait.cancelled`, not just your own click
-- [ ] Never log the `token`
+* The question will be published **at least once**. Deduplicate on `type` + `interrupt_id`.
+* `interrupt_id` is stable for as long as the question stands.
+* Your `answer` reaches the graph unmodified.
+* An answer to a question that has already been resolved is dropped, not applied.
+* A `wait.resumed` envelope follows every question the graph moves past.
+
+## What it does not
+
+* It does not check your `action` against `allowed_actions`.
+* It does not enforce `expires_at`.
+* It does not authenticate you. Whoever can write to `reply_to` can answer any open
+  question on it.
