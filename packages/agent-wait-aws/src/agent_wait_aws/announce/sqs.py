@@ -2,7 +2,7 @@
 
 Every adapter in this package shares one shape: it does its work inside a `try`, and on
 failure it logs and returns. Never raises. A queue being unreachable must not fail a
-refund that has already been decided (REQUIREMENTS section 8).
+refund that has already been decided.
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ class SqsAnnounce:
         only: tuple[Transition, ...] | None = None,
     ) -> None:
         self.queue_url = queue_url
-        # Grouping by thread means one in-flight message per conversation, which is what
-        # makes the thread lease redundant under FIFO (section 10.3).
+        # Grouping by thread means one in-flight message per conversation, so a
+        # consumer never sees two questions from the same graph out of order.
         self.group_id = group_id or (lambda envelope: envelope.thread_id)
         self._client = client or boto3.client("sqs", region_name=region_name)
         self._only = only
@@ -47,9 +47,11 @@ class SqsAnnounce:
             }
             if self.is_fifo:
                 kwargs["MessageGroupId"] = self.group_id(envelope)
-                # The event id is already a ULID minted per transition, so it is exactly
-                # the deduplication id SQS wants.
-                kwargs["MessageDeduplicationId"] = envelope.event_id
+                # `dedupe_key`, not `event_id`. The event id is fresh on every publish,
+                # so a republished question (a redelivered start message, a retry after
+                # a crash) would look new. The dedupe key is stable for as long as the
+                # question is, which is what SQS's five-minute window can then act on.
+                kwargs["MessageDeduplicationId"] = envelope.dedupe_key
             self._client.send_message(**kwargs)  # type: ignore[attr-defined]
         except Exception:
-            _log.exception("SqsAnnounce failed for wait %s (%s)", envelope.wait_id, transition)
+            _log.exception("SqsAnnounce failed for interrupt %s (%s)", envelope.interrupt_id, transition)

@@ -1,33 +1,26 @@
-"""Exceptions raised by agent-wait.
+"""The two exceptions agent-wait raises, both at the interrupt site.
 
-Note the asymmetry that the design depends on: the *core* raises only for programmer
-errors and for token problems surfaced by `TokenCodec.verify()`. `dispatch()` never
-raises for an ordinary bad answer -- it returns `Ignore`. Announce adapters never raise
-at all (REQUIREMENTS section 8).
+There are no runtime errors to speak of. Announce adapters are forbidden from raising
+(see `announce/base.py`) and nothing else in the library makes a decision that can fail.
 """
 
 from __future__ import annotations
 
 
 class WaitError(Exception):
-    """Base class for every agent-wait error."""
-
-
-class TokenInvalid(WaitError):
-    """The token is malformed, signed with an unknown key, or fails its MAC check."""
-
-
-class TokenExpired(WaitError):
-    """The token's own `exp` has passed. Distinct from the wait having timed out."""
-
-
-class QuestionTooLarge(WaitError):
-    """Question exceeds the v0.1 inline limit of 200 KB (REQUIREMENTS section 16.6)."""
+    """Base class, so `except WaitError` catches everything this library raises."""
 
 
 class PolicyError(WaitError):
-    """A WaitPolicy could not be parsed -- e.g. an unusable ISO-8601 duration."""
+    """A `WaitPolicy` that cannot mean anything -- an unparseable timeout, an empty
+    `allowed_actions`. Raised at construction, in the graph, where the mistake is."""
 
 
-class StoreConflict(WaitError):
-    """A conditional write failed in a way the caller did not anticipate."""
+class QuestionTooLarge(WaitError):
+    """The question would not survive the trip.
+
+    An envelope has to fit through whatever the announce adapter is: SNS caps a message
+    at 256 KB, EventBridge at 256 KB, SQS at 256 KB. Finding out at publish time means a
+    parked interrupt nobody ever hears about, so the size is checked when the question is
+    asked instead.
+    """

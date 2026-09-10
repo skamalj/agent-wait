@@ -53,8 +53,10 @@ class EventBridgeAnnounce:
             if response.get("FailedEntryCount"):
                 _log.error(
                     "EventBridge rejected the envelope for wait %s: %s",
-                    envelope.wait_id,
+                    envelope.interrupt_id,
                     json.dumps(response.get("Entries", []), default=str),
                 )
         except Exception:
-            _log.exception("EventBridgeAnnounce failed for wait %s (%s)", envelope.wait_id, transition)
+            _log.exception(
+                "EventBridgeAnnounce failed for interrupt %s (%s)", envelope.interrupt_id, transition
+            )

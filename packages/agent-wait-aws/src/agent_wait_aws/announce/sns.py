@@ -51,4 +51,4 @@ class SnsAnnounce:
                 MessageAttributes=attributes,
             )
         except Exception:
-            _log.exception("SnsAnnounce failed for wait %s (%s)", envelope.wait_id, transition)
+            _log.exception("SnsAnnounce failed for interrupt %s (%s)", envelope.interrupt_id, transition)

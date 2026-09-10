@@ -3,13 +3,12 @@
     load_order -> review -> (issue_refund | notify_customer) -> END
 
 `review` asks a human when the amount is large enough to matter. That is the entire
-integration: one `ask()` call, in the node where the decision belongs. The graph does not
-import `agent_wait`, has no idea where the answer will come from, and would run
-identically in a notebook, on a laptop, or on Lambda behind SQS.
+integration: one `ask()` call, in the node where the decision belongs. The graph has no
+idea where the answer will come from, and would run identically in a notebook, on a
+laptop, or on Lambda behind SQS.
 
-`issue_refund` appends to `PAYMENTS_CALLED`. That list is the point of the whole project:
-it stands in for the irreversible call, and every scenario in REQUIREMENTS section 13
-ends by asserting that it has exactly one entry.
+`issue_refund` appends to `PAYMENTS_CALLED`. It stands in for the irreversible call, and
+the integration tests end by asserting how many entries it has.
 """
 
 from __future__ import annotations
@@ -61,12 +60,10 @@ def review(state: RefundState) -> RefundState:
         },
         policy=WaitPolicy(
             timeout=DEMO_TIMEOUT,
-            on_timeout="resume_default",
-            # REQUIREMENTS section 13 specifies this default verbatim. Note what section
-            # 18.1 does to it: on a timeout the graph receives `action="timeout"`, not
-            # `"reject"` -- the field records *how* the wait was settled, and the other
-            # keys survive. Which is why `route()` below tests for the positive case
-            # (`== "approve"`) rather than enumerating the ways a refund can be refused.
+            # Advisory, all of it. `timeout` is published as an absolute `expires_at`
+            # and `default` as the value to send when it lapses -- but nothing in
+            # agent-wait acts on either. Whoever consumes the envelope decides when the
+            # deadline has passed and what to do about it. See `handler.py`.
             default={"action": "reject", "reason": f"no response within {DEMO_TIMEOUT}"},
             allowed_actions=("approve", "reject"),
             tags={"approver_group": "finance"},

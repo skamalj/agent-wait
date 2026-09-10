@@ -1,139 +1,74 @@
-"""A local stand-in for the Lambda run handler.
+"""A local host: the same nine lines as `examples/refund_agent/handler.py`, minus AWS.
 
-It is the same three lines the real `make_run_handler` runs -- dispatch, invoke,
-register -- without SQS, so the LangGraph integration tests can drive a real graph
-through real waits and still kill the process wherever they like.
+The example's `route()` cannot be imported here -- it builds a DynamoDB checkpointer and
+an SNS client at module scope -- so the routing logic is repeated. That duplication is
+deliberate and it is small; if the two ever disagree, the example is the one that is
+wrong, because it is the one people copy.
 
-Keeping this separate from `agent_wait_aws.make_run_handler` is deliberate: if the
-integration suite only ever passed through the AWS wrapper, a bug in the wrapper and a
-bug in the core would be indistinguishable.
+`LocalHost` adds one thing the real handler does not have: `die_after_invoke`, which
+raises *between* the graph returning and the publisher announcing. That is the crash
+window with no store behind it any more, so it is the one worth being able to reproduce.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any
 
-from agent_wait import (
-    EntryPoint,
-    FakeClock,
-    Ignore,
-    InMemoryAnnounce,
-    RegisterResult,
-    Resume,
-    Start,
-    StaticKeyProvider,
-    TokenCodec,
-    WaitRuntime,
-    WaitStore,
-)
-from agent_wait.store import InMemoryWaitStore
-from langgraph_wait import LangGraphAdapter
-
-KEYS = StaticKeyProvider({"k1": b"integration-test-key"}, "k1")
+from agent_wait import EntryPoint, InMemoryAnnounce, WaitPublisher
+from langgraph_wait import LangGraphAdapter, is_answer, resume_command
 
 
-class Died(Exception):
-    """The handler stopped existing part-way through. Not an error: a scenario."""
+class Died(RuntimeError):
+    """The process, at the least convenient moment."""
 
 
-@dataclass
-class LocalAgent:
-    """One deployed agent: a graph, a runtime, and an entry point that receives both
-    start messages and answers."""
+class _Crashing(LangGraphAdapter):
+    """A graph that returns and then the host dies before anything is published."""
 
-    graph: Any
-    store: WaitStore = field(default_factory=InMemoryWaitStore)
-    clock: FakeClock = field(default_factory=FakeClock)
-    announce: InMemoryAnnounce = field(default_factory=InMemoryAnnounce)
-    owner: str = "worker-a"
-    runtime: WaitRuntime = field(init=False)
-    adapter: LangGraphAdapter = field(init=False)
-    tokens: TokenCodec = field(init=False)
-    invocations: int = field(default=0, init=False)
+    die_after_invoke = False
 
-    def __post_init__(self) -> None:
-        self.adapter = LangGraphAdapter(self.graph)
-        self.tokens = TokenCodec(KEYS, clock=self.clock)
-        self.runtime = WaitRuntime(
-            adapter=self.adapter,
-            store=self.store,
-            tokens=self.tokens,
+    def invoke(self, value: Any, config: Any) -> Any:
+        result = super().invoke(value, config)
+        if self.die_after_invoke:
+            raise Died("after invoke, before announce")
+        return result
+
+
+class LocalHost:
+    def __init__(self, graph: Any) -> None:
+        self.adapter = _Crashing(graph)
+        self.announce = InMemoryAnnounce()
+        self.agent = WaitPublisher(
+            self.adapter,
             announce=[self.announce],
-            entry_point=EntryPoint("sqs", "https://sqs.local/agent-runs.fifo"),
-            clock=self.clock,
-            owner=self.owner,
+            reply_to=EntryPoint("sqs", "https://sqs.example/agent-inbox"),
         )
 
-    # ------------------------------------------------------------------ delivery
-    def deliver(self, payload: dict[str, Any], *, die_after_invoke: bool = False) -> Any:
-        """Handle one inbound message. Returns `Ignore`, or the `RegisterResult`.
+    # -- the router, mirroring examples/refund_agent/handler.py ----------------
+    def deliver(self, message: Mapping[str, Any], *, die_after_invoke: bool = False) -> Any:
+        self.adapter.die_after_invoke = die_after_invoke
+        try:
+            thread_id = message["thread_id"]
+            if is_answer(message):
+                if not self.is_still_open(thread_id, str(message["interrupt_id"])):
+                    return "ignored: already closed"
+                return self.agent.invoke(resume_command(message), thread_id)
+            if self.agent.pending(thread_id):
+                self.agent.republish(thread_id)
+                return "republished: already parked"
+            return self.agent.invoke(message.get("input"), thread_id)
+        finally:
+            self.adapter.die_after_invoke = False
 
-        `die_after_invoke=True` models the crash in scenarios A and C: the graph ran,
-        its checkpoint was written, and the process vanished before `register()` -- or
-        before acking, which amounts to the same thing.
-        """
-        outcome = self.runtime.dispatch(payload)
-        if isinstance(outcome, Ignore):
-            return outcome
+    def is_still_open(self, thread_id: str, interrupt_id: str) -> bool:
+        return any(p.interrupt_id == interrupt_id for p in self.agent.pending(thread_id))
 
-        result = self._invoke(outcome)
-        if die_after_invoke:
-            raise Died("handler died after invoke(), before register()")
+    # -- what a consumer would do ---------------------------------------------
+    def reply(self, envelope: Any, answer: Any) -> dict[str, Any]:
+        """Take the `reply_with` stub off an envelope and fill in the answer, exactly as
+        a UI would."""
+        return {**dict(envelope.reply_with), "answer": answer}
 
-        registered = self.runtime.register(result, outcome.config, outcome.thread_id)
-        return self._drain(registered)
-
-    def _invoke(self, outcome: Start | Resume) -> Any:
-        self.invocations += 1
-        if isinstance(outcome, Start):
-            return self.graph.invoke(outcome.input, outcome.config)
-        return self.graph.invoke(outcome.command, outcome.config)
-
-    def _drain(self, registered: RegisterResult) -> RegisterResult:
-        """A parked answer can make `register()` hand back a resume immediately; the
-        real handler loops on it, so this does too."""
-        while registered.immediate_resume is not None:
-            resume = registered.immediate_resume
-            self.invocations += 1
-            result = self.graph.invoke(resume.command, resume.config)
-            registered = self.runtime.register(result, resume.config, resume.thread_id)
-        return registered
-
-    # ------------------------------------------------------------------ helpers
-    def envelopes(self, transition: str = "created") -> list[Any]:
-        return self.announce.of(transition)  # type: ignore[arg-type]
-
-    def token(self, index: int = 0) -> str:
-        return self.envelopes()[index].token
-
-    def answer(
-        self,
-        action: str = "approve",
-        *,
-        answer_id: str = "click-1",
-        index: int = 0,
-        token: str | None = None,
-        payload: dict[str, Any] | None = None,
-        actor: str = "priya@corp",
-    ) -> dict[str, Any]:
-        """Build the answer envelope the world would send to `reply_to`."""
-        return {
-            "token": token or self.token(index),
-            "action": action,
-            "payload": payload if payload is not None else {"note": "within budget"},
-            "actor": actor,
-            "answer_id": answer_id,
-        }
-
-    def timeout_message(self, index: int = 0) -> dict[str, Any]:
-        """Exactly what `SchedulerAnnounce` puts on the queue when the schedule fires."""
-        envelope = self.envelopes()[index]
-        return {
-            "token": envelope.token,
-            "action": "timeout",
-            "answer_id": f"timeout:{envelope.wait_id}",
-        }
-
-    def wait(self, index: int = 0) -> Any:
-        return self.store.get(self.envelopes()[index].wait_id)
+    def open_envelopes(self) -> list[Any]:
+        return self.announce.of("created")

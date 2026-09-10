@@ -1,7 +1,7 @@
 """`InMemoryAnnounce` -- collects envelopes so tests can assert on what the world saw.
 
-Also the honest way to test rule 10: `FailingAnnounce` raises on demand, and the suite
-checks that the run is unharmed and the other adapters still got their envelope.
+`FailingAnnounce` raises on demand, so the suite can check the run is unharmed and the
+other adapters still got their envelope.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class InMemoryAnnounce:
 
 
 class FailingAnnounce:
-    """Raises on every announce. Used to prove isolation (rule 10)."""
+    """Raises on every announce. Used to prove the isolation in `CompositeAnnounce`."""
 
     name = "failing"
 

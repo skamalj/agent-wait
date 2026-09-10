@@ -1,18 +1,35 @@
-"""The `AnnounceAdapter` port -- the only thing users are expected to plug into.
+"""The `AnnounceAdapter` port -- the only thing you are expected to implement.
 
-An announce adapter tells the world that a wait exists or changed. That is *all* it
-does. It does not decide anything, it is not consulted, and its return value is
-discarded. The contract is one line long and the whole design leans on it:
+An announce adapter puts the envelope somewhere. That is all it does. It makes no
+decisions, it is never consulted, and its return value is discarded. The contract is one
+line long:
 
     **`announce()` must not raise into the caller.**
 
-If Slack is down, the refund still parks. If the SNS topic was deleted, the run still
-completes. A failed `created` announce leaves `notified_at` unset and the sweeper
-retries it later (rule 10) -- which is why the runtime, not the adapter, owns that flag.
+If Slack is down, the graph still parked and the run still completes. `CompositeAnnounce`
+enforces this rather than trusting it, but an adapter that logs its own failure gives a
+far better error message than a stack trace from the composite.
 
-The timeout is an announce adapter too. `SchedulerAnnounce` "delivers" the wait to the
-future by creating a one-shot schedule; when it fires, the answer arrives at the agent's
-own entry point like any other. That is the whole reason there is no timer Lambda.
+## Anything can be an announcer
+
+Since v0.2 nobody reads state back through this library, so "announce" no longer means
+"publish an event". It means *put the question where whoever answers it will find it*.
+That can be a topic, a queue, a bus -- or a DynamoDB table, a Redis key, a Postgres row,
+a database your UI already queries, a file on disk. `DynamoDbAnnounce` in
+`agent-wait-aws` is there to make the point: it is thirty lines, and an approval UI can
+be built on a `Query` against it with no message broker anywhere.
+
+Two methods:
+
+    class MyAnnounce:
+        name = "mine"
+
+        def supports(self, transition): return True
+        def announce(self, envelope, transition): ...
+
+`supports()` lets an adapter opt out cheaply -- a UI that only wants to draw new
+questions returns True for `created` and False for `resumed`. Most adapters want both:
+`created` is "draw the button", `resumed` is "retract it".
 """
 
 from __future__ import annotations
@@ -31,6 +48,5 @@ class AnnounceAdapter(Protocol):
         ...
 
     def supports(self, transition: Transition) -> bool:
-        """Adapters that only care about some transitions say so here, so the runtime
-        can skip them cheaply."""
+        """Which transitions this adapter wants. Called before every announce."""
         ...

@@ -1,9 +1,8 @@
 """`LogAnnounce`, and the one thing it must never do.
 
-A wait envelope carries a live credential and the question the agent asked -- which may
-be a customer's name, an amount, or anything else the graph was working on. CLAUDE.md and
-REQUIREMENTS section 12 both say it must not reach the logs. This is where that is
-enforced rather than intended.
+An envelope carries the question the agent asked -- which may be a customer's name, an
+amount, or anything else the graph was working on. CLAUDE.md says it must not reach the
+logs at INFO. This is where that is enforced rather than intended.
 """
 
 from __future__ import annotations
@@ -11,34 +10,33 @@ from __future__ import annotations
 import logging
 
 import pytest
-from agent_wait import InMemoryWaitStore, LogAnnounce
+from agent_wait import LogAnnounce, WaitPolicy
 from rig import Rig
 
 
 @pytest.fixture()
 def rig() -> Rig:
-    return Rig(store=InMemoryWaitStore())
+    r = Rig()
+    r.agent.announce.adapters = [LogAnnounce()]
+    return r
 
 
-def test_the_token_never_reaches_the_logs(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
-    """At any level, including DEBUG. A token in CloudWatch is a token anyone with read
-    access to CloudWatch can use to approve a refund."""
-    rig.runtime.announce.adapters = [LogAnnounce()]
-
-    with caplog.at_level(logging.DEBUG, logger="agent_wait.announce"):
-        wait = rig.park()
-        rig.answer(wait, "approve", answer_id="click-1")
-
-    token = rig.token_for(wait)
-    assert token not in caplog.text
-    assert "aw1." not in caplog.text
+def park(rig: Rig) -> None:
+    """Run one invoke that leaves the thread parked on a refund approval."""
+    rig.invoke_that(
+        lambda: rig.adapter.park(
+            "order-4471",
+            "int-1",
+            policy=WaitPolicy(allowed_actions=("approve", "reject"), tags={"group": "finance"}),
+            question={"kind": "refund_approval", "amount": 41000},
+        ),
+        thread_id="order-4471",
+    )
 
 
 def test_the_question_is_not_logged_at_info(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
-    rig.runtime.announce.adapters = [LogAnnounce()]
-
     with caplog.at_level(logging.INFO, logger="agent_wait.announce"):
-        rig.park()
+        park(rig)
 
     assert "refund_approval" not in caplog.text
     assert "41000" not in caplog.text
@@ -46,59 +44,31 @@ def test_the_question_is_not_logged_at_info(rig: Rig, caplog: pytest.LogCaptureF
 
 def test_the_question_is_available_at_debug(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
     """By then somebody has deliberately turned it on."""
-    rig.runtime.announce.adapters = [LogAnnounce()]
-
     with caplog.at_level(logging.DEBUG, logger="agent_wait.announce"):
-        rig.park()
+        park(rig)
 
     assert "refund_approval" in caplog.text
 
 
 def test_the_useful_fields_are_logged(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
-    """Operationally this has to be worth reading: what happened, to which wait, when."""
-    rig.runtime.announce.adapters = [LogAnnounce()]
-
+    """Operationally this has to be worth reading: what happened, to which interrupt."""
     with caplog.at_level(logging.INFO, logger="agent_wait.announce"):
-        wait = rig.park()
+        park(rig)
 
     assert "wait.created" in caplog.text
-    assert wait.wait_id in caplog.text
     assert "order-4471" in caplog.text
-    assert "approver_group" in caplog.text
+    assert "int-1" in caplog.text
+    assert "finance" in caplog.text
 
 
-def test_it_logs_every_transition(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
-    rig.runtime.announce.adapters = [LogAnnounce()]
+def test_a_logger_that_explodes_does_not_take_the_run_with_it() -> None:
+    """The adapter contract is absolute, and it applies to our own adapters too."""
 
-    with caplog.at_level(logging.INFO, logger="agent_wait.announce"):
-        wait = rig.park()
-        rig.answer(wait, "approve", answer_id="click-1")
-        rig.adapter.advance_past(wait.interrupt_id)
-        rig.finish()
-
-    assert "wait.created" in caplog.text
-    assert "wait.answered" in caplog.text
-    assert "wait.resumed" in caplog.text
-
-
-def test_a_broken_logger_cannot_break_the_run(rig: Rig) -> None:
-    """The adapter contract applies to the built-in adapters too."""
-
-    class ExplodingLogger(logging.Logger):
+    class Exploding(logging.Logger):
         def log(self, *args: object, **kwargs: object) -> None:
-            raise RuntimeError("the logging backend is on fire")
+            raise RuntimeError("logging backend is down")
 
-        def isEnabledFor(self, level: int) -> bool:
-            return False
+    rig = Rig()
+    rig.agent.announce.adapters = [LogAnnounce(Exploding("boom"))]
 
-    rig.runtime.announce.adapters = [LogAnnounce(ExplodingLogger("boom"))]
-
-    wait = rig.park()  # must not raise
-
-    assert rig.reload(wait).status == "pending"
-
-
-def test_supports_every_transition() -> None:
-    adapter = LogAnnounce()
-    for transition in ("created", "answered", "expired", "resumed", "cancelled"):
-        assert adapter.supports(transition) is True  # type: ignore[arg-type]
+    park(rig)  # must not raise
