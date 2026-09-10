@@ -7,9 +7,9 @@ from agent_wait import EntryPoint, WaitPolicy, WaitPublisher
 
 agent = WaitPublisher(adapter, announce=[...], reply_to=EntryPoint("sqs", url))
 
-agent.invoke(value, thread_id)      # run the graph, publish what it parked on
-agent.pending(thread_id)            # what is it parked on right now?
-agent.republish(thread_id)          # announce it again -- repairs a lost announce
+agent.invoke(value, thread_id)  # run the graph, publish what it parked on
+agent.pending(thread_id)  # what is it parked on right now?
+agent.republish(thread_id)  # announce it again -- repairs a lost announce
 ```
 
 `WaitPolicy` is what a graph author declares at the interrupt site: `timeout`, `default`,

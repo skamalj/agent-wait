@@ -1,6 +1,6 @@
 [project]
 name = "agent-wait-aws"
-version = "0.1.0"
+version = "0.2.0"
 description = "AWS backends for agent-wait: DynamoDB store, SQS/SNS/EventBridge/Scheduler announce, Lambda wrapper."
 readme = "README.md"
 requires-python = ">=3.12"

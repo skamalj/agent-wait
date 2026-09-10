@@ -133,9 +133,9 @@ secure.
 
 ```python
 if message.get("interrupt_id"):
-    agent.invoke(resume_command(message), message["thread_id"])   # a resume
+    agent.invoke(resume_command(message), message["thread_id"])  # a resume
 else:
-    agent.invoke(message["input"], message["thread_id"])          # a start
+    agent.invoke(message["input"], message["thread_id"])  # a start
 ```
 
 `interrupt_id` present → resume. Absent → start. That is the whole rule, and it holds by
@@ -153,7 +153,7 @@ a new `interrupt_id`, which no consumer could deduplicate away.
 
 ```python
 if agent.pending(thread_id):
-    agent.republish(thread_id)      # a redelivery; repair the announce, do not re-ask
+    agent.republish(thread_id)  # a redelivery; repair the announce, do not re-ask
 else:
     agent.invoke(message["input"], thread_id)
 ```

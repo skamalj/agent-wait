@@ -40,10 +40,12 @@ disagree about it and why there is no repair pass.
 ```python
 before = {p.interrupt_id: p for p in adapter.pending(thread_id)}
 result = adapter.invoke(value, config)
-after  = {p.interrupt_id: p for p in adapter.pending(thread_id)}
+after = {p.interrupt_id: p for p in adapter.pending(thread_id)}
 
-for new in after - before:   publish("created", ...)
-for gone in before - after:  publish("resumed", ...)
+for new in after - before:
+    publish("created", ...)
+for gone in before - after:
+    publish("resumed", ...)
 ```
 
 Two `get_state()` reads per invoke. The framework stays the only source of truth, so

@@ -131,3 +131,11 @@ def test_an_oversized_question_is_refused_where_it_is_asked() -> None:
 
     with pytest.raises(QuestionTooLarge, match="204800"):
         check_question_size({"blob": "x" * 300_000})
+
+
+def test_iso_passes_none_through() -> None:
+    """A wait with no timeout has no expiry, and `None` has to survive the formatting."""
+    from agent_wait import iso
+
+    assert iso(None) is None
+    assert iso(1_760_000_000.0) == "2025-10-09T08:53:20Z"

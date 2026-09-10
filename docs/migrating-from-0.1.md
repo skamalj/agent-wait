@@ -30,8 +30,7 @@ outcome = runtime.dispatch(message)
 if isinstance(outcome, Ignore):
     return
 try:
-    result = graph.invoke(outcome.input if isinstance(outcome, Start) else outcome.command,
-                          outcome.config)
+    result = graph.invoke(outcome.input if isinstance(outcome, Start) else outcome.command, outcome.config)
 finally:
     runtime.register(result, outcome.config, outcome.thread_id)
 ```
@@ -42,10 +41,10 @@ becomes
 thread_id = message["thread_id"]
 if is_answer(message):
     if not any(p.interrupt_id == message["interrupt_id"] for p in agent.pending(thread_id)):
-        return                                    # already answered
+        return  # already answered
     agent.invoke(resume_command(message), thread_id)
 elif agent.pending(thread_id):
-    agent.republish(thread_id)                    # a redelivered start; do not re-ask
+    agent.republish(thread_id)  # a redelivered start; do not re-ask
 else:
     agent.invoke(message["input"], thread_id)
 ```
@@ -109,7 +108,7 @@ The envelope carries `expires_at` (an absolute instant, already resolved from `P
 `default`. Nothing fires. You need a sweep:
 
 ```python
-for row in open_questions_past(now):       # e.g. a query on the approvals table's GSI
+for row in open_questions_past(now):  # e.g. a query on the approvals table's GSI
     post_to_reply_to({**row["reply_with"], "answer": row["default"]})
 ```
 

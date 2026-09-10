@@ -1,6 +1,6 @@
 [project]
 name = "langgraph-wait"
-version = "0.1.0"
+version = "0.2.0"
 description = "LangGraph adapter for agent-wait: ask() and the framework adapter."
 readme = "README.md"
 requires-python = ">=3.12"

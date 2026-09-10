@@ -21,6 +21,7 @@ uv add agent-wait langgraph-wait
 from agent_wait import WaitPolicy
 from langgraph_wait import ask
 
+
 def review(state):
     if state["amount"] <= 5_000:
         return {"decision": {"action": "approve", "by": "policy:auto"}}
@@ -62,15 +63,17 @@ tells them apart:
 ```python
 from langgraph_wait import is_answer, resume_command
 
+
 def route(message):
     thread_id = message["thread_id"]
     if is_answer(message):
         if not is_still_open(thread_id, message["interrupt_id"]):
-            return                                       # somebody already answered
+            return  # somebody already answered
         return agent.invoke(resume_command(message), thread_id)
     if agent.pending(thread_id):
-        return agent.republish(thread_id)                # a redelivery; don't re-ask
+        return agent.republish(thread_id)  # a redelivery; don't re-ask
     return agent.invoke(message["input"], thread_id)
+
 
 def is_still_open(thread_id, interrupt_id):
     return any(p.interrupt_id == interrupt_id for p in agent.pending(thread_id))
@@ -113,8 +116,10 @@ the run still completes.
 class MyAnnounce:
     name = "mine"
 
-    def supports(self, transition): return True          # "created" / "resumed"
-    def announce(self, envelope, transition): ...        # log failures, never raise
+    def supports(self, transition):
+        return True  # "created" / "resumed"
+
+    def announce(self, envelope, transition): ...  # log failures, never raise
 ```
 
 Because nothing reads state back through this library, "announce" does not have to mean

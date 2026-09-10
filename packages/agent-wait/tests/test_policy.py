@@ -99,3 +99,9 @@ def test_a_policy_survives_the_trip_through_an_interrupt_value() -> None:
     policy = WaitPolicy(timeout="P3D", default={"action": "reject"}, tags={"team": "finance"})
 
     assert WaitPolicy.from_dict(json.loads(json.dumps(policy.to_dict()))) == policy
+
+
+def test_a_duration_that_parses_to_zero_is_still_refused() -> None:
+    """`PT0S` matches the grammar but means "already expired", which no author intends."""
+    with pytest.raises(PolicyError, match="positive"):
+        parse_duration("PT0S")

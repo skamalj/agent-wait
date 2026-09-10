@@ -44,9 +44,9 @@ jobs:
         run: uv run pyright
 
       - name: Tests
-        # The four local levels of REQUIREMENTS section 12: unit, conformance over three
-        # stores, LangGraph integration, and AWS-local over moto. The end-to-end level is
-        # opt-in via AGENT_WAIT_E2E=1 and needs a deployed stack, so it does not run here.
+        # The three local levels: unit, LangGraph integration against a real graph and a
+        # real checkpointer, and AWS-local over moto. The end-to-end level is opt-in via
+        # AGENT_WAIT_E2E=1 and needs a deployed stack, so it does not run here.
         run: >
           uv run pytest
           --junitxml=reports/junit.xml
@@ -54,7 +54,7 @@ jobs:
           --cov-report=term-missing --cov-report=xml:reports/coverage.xml
 
       - name: Coverage floor
-        # REQUIREMENTS section 12: at least 85% on agent_wait and langgraph_wait.
+        # At least 85% on agent_wait and langgraph_wait.
         run: >
           uv run python -c "
           import xml.etree.ElementTree as ET, sys;

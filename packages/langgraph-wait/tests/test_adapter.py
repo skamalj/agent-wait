@@ -148,3 +148,15 @@ def test_a_subgraph_interrupt_surfaces_on_the_parent() -> None:
 
     adapter.invoke(Command(resume={parked.interrupt_id: {"action": "approve"}}), config)
     assert adapter.pending("nested") == []
+
+
+def test_an_unparseable_checkpoint_timestamp_degrades_to_no_anchor() -> None:
+    """`created_at` is LangGraph's field, in LangGraph's format. If a future version
+    changes it, `expires_at` should fall back to publish time rather than crash the run --
+    a drifting deadline beats no question at all."""
+    from langgraph_wait.adapter import _epoch
+
+    assert _epoch("2026-09-10T13:36:40.790853+00:00") is not None
+    assert _epoch("last Tuesday") is None
+    assert _epoch(None) is None
+    assert _epoch(1_760_000_000) is None

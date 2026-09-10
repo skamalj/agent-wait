@@ -16,7 +16,7 @@ Subscribe, and you will receive
 ```python
 def on_envelope(envelope: dict) -> None:
     key = f"{envelope['type']}:{envelope['interrupt_id']}"
-    if already_seen(key):        # at-least-once delivery, and deliberate republishing
+    if already_seen(key):  # at-least-once delivery, and deliberate republishing
         return
     mark_seen(key)
 
