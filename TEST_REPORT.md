@@ -130,9 +130,9 @@ Still unproven, and only a deployment settles them:
 - that the router's `pending()` guard holds under a real FIFO queue with real redeliveries;
 - that the Lambda's IAM grants are sufficient, now that four of them were deleted.
 
-The last is the one I would want run before anyone relies on this. It is the replacement
-for v0.1's conditional write, and the local suite exercises it under a driver that
-serialises by construction. A real queue does not.
+The third is the one I would want run before anyone relies on this. `pending()` is the
+replacement for v0.1's conditional write, and the local suite exercises it under a driver
+that serialises by construction. A real queue does not.
 
 **The same-instant race.** `pending()` narrows the window between two different answers to
 one question; it does not close it. On SQS FIFO keyed by thread the transport closes it. On
