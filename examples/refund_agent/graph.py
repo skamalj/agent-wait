@@ -26,8 +26,8 @@ PAYMENTS_CALLED: list[str] = []
 
 APPROVAL_THRESHOLD = 25_000
 
-# Three days in production; the end-to-end run overrides this to two minutes so a
-# scripted scenario can actually watch a timeout fire (section 12).
+# Three days in production; the end-to-end run overrides this to a few minutes so a
+# scripted scenario can actually watch a deadline pass.
 DEMO_TIMEOUT = os.environ.get("AGENT_WAIT_TIMEOUT", "P3D")
 
 

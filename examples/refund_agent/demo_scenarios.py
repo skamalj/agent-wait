@@ -8,13 +8,13 @@ DynamoDB approvals table and on a real SNS topic, and the refund counter is a re
 DynamoDB item this script reads from *outside* the Lambda -- because an in-memory list
 proves nothing about a process you are not inside.
 
-## What changed from v0.1, and why the scenarios read differently
+## This script is the consumer
 
-The library no longer receives answers, so this script is not just an observer any more:
-it plays the part of the consumer. It reads the envelope off the announcements queue,
-fills in `reply_with`, posts it back, and -- in scenario B -- enforces the timeout itself
-by sweeping the approvals table. That is the point. **If this script can do it in forty
-lines, the case for the library doing it is weak**, which is the argument v0.2 rests on.
+The library does not receive answers, so this script is not just an observer: it plays
+the part of the consumer. It reads the envelope off the announcements queue, fills in
+`reply_with`, posts it back, and -- in scenario B -- enforces the timeout itself by
+sweeping the approvals table. That is the point. **If this script can do it in forty
+lines, the case for the library doing it is weak.**
 
 Two things are *simulated* rather than induced, and it is worth being straight about
 which:
@@ -226,9 +226,9 @@ def scenario_a(dep: Deployment, journal: Journal) -> None:
 def scenario_b(dep: Deployment, journal: Journal, *, timeout_seconds: int) -> None:
     """The timeout, enforced by the consumer -- because nothing else will.
 
-    This is the v0.2 trade made concrete. The envelope carries an absolute `expires_at`
-    and the default the graph author declared; the sweep below is the entire enforcement
-    mechanism, and it lives here rather than in the library.
+    The envelope carries an absolute `expires_at` and the default the graph author
+    declared; the sweep below is the entire enforcement mechanism, and it lives here
+    rather than in the library.
     """
     name = "B"
     thread = f"order-b-{uuid.uuid4().hex[:6]}"
@@ -281,9 +281,8 @@ def scenario_b(dep: Deployment, journal: Journal, *, timeout_seconds: int) -> No
 def scenario_c(dep: Deployment, journal: Journal) -> None:
     """The refund happened; the answer is delivered again.
 
-    v0.1 refused this in `dispatch()` with a conditional write. v0.2 refuses it in the
-    handler's `is_still_open()` check, which reads the graph's own state. Same outcome,
-    and this scenario exists to prove the replacement actually holds under a real queue.
+    The handler's `is_still_open()` check refuses it by reading the graph's own state.
+    This scenario exists to prove that holds under a real queue with real redeliveries.
     """
     name = "C"
     thread = f"order-c-{uuid.uuid4().hex[:6]}"

@@ -1,0 +1,75 @@
+name: release
+
+# Publishes the three packages to PyPI when a v* tag is pushed, then proves the published
+# artefacts work by installing them from PyPI -- not from the build -- into a clean
+# environment and running a smoke test that exercises the public API end to end.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run pytest
+      - run: uv run ruff check . && uv run pyright
+      - run: |
+          uv build --package agent-wait --out-dir dist
+          uv build --package langgraph-wait --out-dir dist
+          uv build --package agent-wait-aws --out-dir dist
+      - run: uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v4
+      # The core package must land first: the other two depend on it and PyPI resolves
+      # dependencies at install time, not upload time, so order only matters for the
+      # smoke test below racing the index.
+      - run: uv publish dist/agent_wait-*
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      - run: uv publish dist/langgraph_wait-* dist/agent_wait_aws-*
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  smoke-from-pypi:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/smoke_from_pypi.py
+      - uses: astral-sh/setup-uv@v4
+      - name: wait for the index to serve the new version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 30); do
+            if uv pip install --dry-run --no-cache "agent-wait==$VERSION" >/dev/null 2>&1; then exit 0; fi
+            sleep 10
+          done
+          echo "agent-wait==$VERSION never appeared on PyPI" && exit 1
+      - name: install from PyPI into a clean venv and run the smoke test
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          uv venv .smoke && . .smoke/bin/activate
+          uv pip install --no-cache "agent-wait==$VERSION" "langgraph-wait==$VERSION" "agent-wait-aws==$VERSION"
+          python scripts/smoke_from_pypi.py

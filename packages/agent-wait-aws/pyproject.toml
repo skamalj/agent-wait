@@ -1,15 +1,30 @@
 [project]
 name = "agent-wait-aws"
 version = "0.2.0"
-description = "AWS backends for agent-wait: DynamoDB store, SQS/SNS/EventBridge/Scheduler announce, Lambda wrapper."
+description = "AWS announce adapters for agent-wait: SNS, SQS, EventBridge, and DynamoDB (the question as a row), plus a CDK stack for the example."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
-authors = [{ name = "Kamaljeet Singh" }]
-dependencies = ["agent-wait", "boto3>=1.35"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kamaljeet Singh", email = "skamalj@gmail.com" }]
+keywords = ["agents", "langgraph", "human-in-the-loop", "aws", "sns", "sqs", "eventbridge", "dynamodb"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = ["agent-wait>=0.2,<0.3", "boto3>=1.35"]
 
 [project.urls]
-Homepage = "https://github.com/skamalj/agent-wait"
+Homepage = "https://skamalj.github.io/agent-wait/"
+Documentation = "https://skamalj.github.io/agent-wait/"
+Source = "https://github.com/skamalj/agent-wait"
+Issues = "https://github.com/skamalj/agent-wait/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -17,6 +32,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_wait_aws"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agent_wait_aws", "README.md", "LICENSE"]
 
 [tool.uv.sources]
 agent-wait = { workspace = true }

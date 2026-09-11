@@ -93,6 +93,7 @@ body — it is `HMAC-SHA256(secret, raw body)`, the same shape GitHub and Stripe
 ```python
 import hashlib, hmac
 
+
 def verify(secret: bytes, raw_body: bytes, header: str | None) -> bool:
     if not header:
         return False

@@ -5,11 +5,11 @@ Two things happen here and nothing else:
     agent = WaitPublisher(...)      # where questions go, and where answers should come back
     agent.invoke(value, thread_id)  # run the graph, publish whatever it parked on
 
-`route()` below is the part that used to be a library feature. It is a dozen lines, it is
-yours, and it is deliberately in the example rather than in the package: deciding whether
-an inbound message is a fresh request or an answer is a decision about *your* queue, and
-the moment a library makes it, the library needs to know about tokens, idempotency and
-who is allowed to answer. v0.2 does not.
+`route()` below is a dozen lines, it is yours, and it is deliberately in the example
+rather than in the package: deciding whether an inbound message is a fresh request or an
+answer is a decision about *your* queue, and the moment a library makes it, the library
+has to know about credentials, idempotency and who is allowed to answer. This one does
+not.
 
 Copy it. The two guards in it are not decoration -- see the comments on each.
 
@@ -80,7 +80,7 @@ def route(message: Mapping[str, Any]) -> Any:
         # A redelivered start for a thread that is already parked. Re-invoking with the
         # original input would ask the question a second time under a new interrupt id;
         # republishing repairs an announce that may have been lost without touching the
-        # graph. This is the rule v0.1's store used to apply for you.
+        # graph.
         _log.info("republishing an already-parked thread rather than starting a new turn")
         agent.republish(thread_id)
         return None
@@ -92,9 +92,9 @@ def is_still_open(thread_id: str, interrupt_id: str) -> bool:
 
     Not a guarantee -- two answers a millisecond apart both pass this check, and the
     second then resumes a thread that has moved on. Making it a guarantee needs a
-    conditional write somewhere, which is the thing v0.2 handed back to you. On SQS FIFO
-    with `MessageGroupId = thread_id` the queue already serialises per thread, and this
-    check closes the rest of the gap.
+    conditional write somewhere, which is yours to add if your transport does not
+    serialise. On SQS FIFO with `MessageGroupId = thread_id` the queue already
+    serialises per thread, and this check closes the rest of the gap.
     """
     return any(p.interrupt_id == interrupt_id for p in agent.pending(thread_id))
 

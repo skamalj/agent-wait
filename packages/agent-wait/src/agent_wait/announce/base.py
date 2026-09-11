@@ -32,8 +32,8 @@ either way. The base class exists so that the common case is the correct case by
 
 ## Anything can be an announcer
 
-Since v0.2 nobody reads state back through this library, so "announce" no longer means
-"publish an event". It means *put the question where whoever answers it will find it*.
+Nothing reads state back through this library, so "announce" does not mean "publish an
+event". It means *put the question where whoever answers it will find it*.
 That can be a topic, a queue, a bus -- or a DynamoDB table, a Redis key, a Postgres row,
 a database your UI already queries, a file on disk. `DynamoDbAnnounce` in
 `agent-wait-aws` is there to make the point.

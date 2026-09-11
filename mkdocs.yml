@@ -1,0 +1,52 @@
+site_name: agent-wait
+site_description: Publish a LangGraph agent's interrupts to the outside world, so a human can answer them.
+site_url: https://skamalj.github.io/agent-wait/
+repo_url: https://github.com/skamalj/agent-wait
+repo_name: skamalj/agent-wait
+edit_uri: edit/main/docs/
+copyright: MIT · Kamaljeet Singh
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: dark mode
+    - scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Overview: index.md
+  - Message formats: message-formats.md
+  - Architecture: architecture.md
+  - Integrating a consumer: integrating-a-consumer.md
+  - Migrating from 0.1: migrating-from-0.1.md
+  - Changelog: changelog.md

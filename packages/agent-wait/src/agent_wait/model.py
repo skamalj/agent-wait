@@ -19,15 +19,14 @@ from .errors import QuestionTooLarge
 from .policy import WaitPolicy
 
 Transition = Literal["created", "resumed"]
-"""Only two things can be said about a wait now.
+"""The two things that can be said about a wait.
 
-`created` -- the graph is parked on this question, here is everything you need to answer
-it. `resumed` -- the graph has moved past it; close the ticket, retract the Slack button.
+`created` -- the graph is parked on this question; here is everything needed to answer
+it. `resumed` -- the graph has moved past it; close the ticket, retract the button.
 
-v0.1 also had `answered`, `expired` and `cancelled`. All three were transitions of a
-record this library no longer keeps: they described the *library's* opinion about an
-answer it had accepted. Since the answer never reaches us, only the graph's own state
-can be reported, and the graph knows exactly two things -- parked, or not.
+There is no `answered`, `expired` or `cancelled`. Those would describe the library's
+opinion about an answer, and no answer ever reaches the library. Only the graph's own
+state is reported, and the graph knows exactly two things: parked, or not.
 """
 
 # 256 KB is the smallest of the caps on the way out (SNS, SQS and EventBridge all sit

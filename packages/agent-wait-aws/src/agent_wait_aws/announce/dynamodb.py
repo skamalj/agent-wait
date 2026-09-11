@@ -1,7 +1,7 @@
 """`DynamoDbAnnounce` -- the question *is* the row.
 
-Here to make a point that only became true in v0.2: now that nothing reads state back
-through this library, an "announce adapter" does not have to be a message broker. It is
+Here to make a point: since nothing reads state back through this library, an
+"announce adapter" does not have to be a message broker. It is
 just somewhere the question lands where whoever answers it will find it. A table is a
 perfectly good somewhere -- and for an approval queue it is a better one, because a UI
 can `Query` it for "everything still open" without anybody having to build a projection

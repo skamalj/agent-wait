@@ -1,16 +1,22 @@
 # agent-wait
 
-Publish an agent's interrupts to the outside world, so a human can answer them.
+[![PyPI](https://img.shields.io/pypi/v/agent-wait.svg)](https://pypi.org/project/agent-wait/)
+[![CI](https://github.com/skamalj/agent-wait/actions/workflows/ci.yml/badge.svg)](https://github.com/skamalj/agent-wait/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/skamalj/agent-wait/blob/main/LICENSE)
 
-A LangGraph node calls `interrupt()` and the graph stops. In a Lambda the process then
-exits, and nothing remembers that a question was asked or knows where to send the answer.
-agent-wait takes that pause and puts it somewhere people can see it — a topic, a queue, a
-database row — with everything needed to answer it in one envelope.
+**Publish a LangGraph agent's interrupts to the outside world, so a human can answer them.**
+
+A LangGraph node calls `interrupt()` and the graph stops. If the agent runs in a Lambda,
+a container, or anything else that doesn't stick around, the process exits and nobody
+knows a question was asked or where to send the answer. agent-wait takes that pause and
+puts it somewhere people can see it — a topic, a queue, a webhook, a database row — with
+everything needed to answer it in one envelope.
 
 It does not receive the answer. That part is yours, and it is about a dozen lines.
 
 ```bash
-uv add agent-wait langgraph-wait
+pip install agent-wait langgraph-wait          # core + LangGraph
+pip install agent-wait-aws                     # SNS / SQS / EventBridge / DynamoDB announcers
 ```
 
 ## The whole thing
@@ -40,8 +46,8 @@ def review(state):
 
 `ask()` is a thin wrapper over `interrupt()`. The node pauses exactly as LangGraph pauses;
 what `ask()` adds is the policy, which rides along and comes back out in the envelope. A
-plain `interrupt(value)` works too, with default policy — so a graph that already
-interrupts gets published with no edit at all.
+plain `interrupt(value)` works too, with default policy — a graph that already interrupts
+gets published with no edit at all.
 
 **In the host** — wire it once:
 
@@ -52,10 +58,6 @@ from langgraph_wait import LangGraphAdapter
 
 agent = WaitPublisher(LangGraphAdapter(graph), announce=[SnsAnnounce(topic_arn)])
 ```
-
-That is the whole constructor. There is an optional `reply_to=EntryPoint("sqs", queue_url)`
-if you want the envelope to tell consumers where your entry point is — the library never
-uses it itself, because it builds no return leg.
 
 **Then route each message.** Starts and answers arrive at the same place; `interrupt_id`
 tells them apart:
@@ -79,7 +81,8 @@ def is_still_open(thread_id, interrupt_id):
     return any(p.interrupt_id == interrupt_id for p in agent.pending(thread_id))
 ```
 
-That is the complete integration. `examples/refund_agent/` is it, deployed.
+That is the complete integration. [`examples/refund_agent/`](https://github.com/skamalj/agent-wait/tree/main/examples/refund_agent)
+is it, deployed to Lambda behind SQS.
 
 ## What goes out
 
@@ -92,20 +95,19 @@ That is the complete integration. `examples/refund_agent/` is it, deployed.
   "allowed_actions": ["approve", "reject"],
   "expires_at": "2026-09-12T09:00:00Z",
   "default": { "action": "reject", "reason": "no response in 3 days" },
-  "reply_to": { "kind": "sqs", "url": "https://sqs…/agent-runs.fifo" },
   "reply_with": { "thread_id": "order-4471", "interrupt_id": "a1b2c3d4e5f60718", "answer": null }
 }
 ```
 
 `reply_with` is a filled-in stub: the consumer copies it, sets `answer`, and posts it to
 wherever your agent listens. Whatever goes in `answer` is what the `ask()` call returns —
-verbatim, with nothing merged into it. `reply_to` is `null` unless you chose to publish an
-address; it is a hint, not a mechanism.
+verbatim, with nothing merged into it.
 
 A second envelope, `wait.resumed`, goes out when the graph moves past the question, so a
 UI knows to retract the button.
 
-Full schema, including how to deduplicate: [docs/message-formats.md](docs/message-formats.md).
+Full schema, including how to deduplicate:
+[Message formats](https://skamalj.github.io/agent-wait/message-formats/).
 
 ## Announcers
 
@@ -127,88 +129,66 @@ class RedisAnnounce(BaseAnnounce):
         self.client.set(envelope.dedupe_key, envelope.to_json())
 ```
 
-That is a complete adapter. The contract — **an announcer must never raise into the run**
-— is enforced by the base class: an exception from `deliver()` becomes a log line, and
-the graph that just parked stays parked. You also get `only=("created",)` for free, so a
-caller can restrict your adapter to new questions without you writing the filter.
+The contract — **an announcer must never raise into the run** — is enforced by the base
+class: an exception from `deliver()` becomes a log line, and the graph that just parked
+stays parked.
 
-Subclassing is optional. `WaitPublisher` accepts anything with `name`, `supports()` and
-`announce()` — a `Protocol`, not a base class — and `CompositeAnnounce` contains failures
-either way. The base just makes the common case the correct case.
+Because nothing reads state back through this library, "announce" doesn't have to mean
+"publish an event". It means *put the question where whoever answers it will find it*:
 
-Because nothing reads state back through this library, "announce" does not have to mean
-"publish an event". It means *put the question where whoever answers it will find it*.
-That can be a broker — or it can be a table your UI already queries:
-
-| Adapter | Package | What it does |
+| Adapter | Package | Where the question lands |
 |---|---|---|
-| `LogAnnounce` | `agent-wait` | A structured line per transition. The question never reaches INFO. |
-| `InMemoryAnnounce` | `agent-wait` | Collects envelopes. For tests. |
-| `WebhookAnnounce` | `agent-wait` | POSTs the envelope as JSON. Stdlib only. Optional HMAC-SHA256 signature in the GitHub/Stripe shape; `verify_signature()` is the receiver's half. |
-| `SnsAnnounce` | `agent-wait-aws` | Publishes; policy `tags` become message attributes, so subscription filters can route. |
-| `SqsAnnounce` | `agent-wait-aws` | Sends to a queue; on FIFO, groups by thread and dedupes on the stable key. |
-| `EventBridgeAnnounce` | `agent-wait-aws` | `PutEvents` with the transition as detail-type. Notices partial failures, which return HTTP 200. |
-| `DynamoDbAnnounce` | `agent-wait-aws` | **The question is the row.** `created` writes it `open`, `resumed` marks it `closed`. A GSI on `status` gives an approvals UI its query with no broker anywhere. |
+| `WebhookAnnounce` | `agent-wait` | A URL. JSON POST, optional HMAC-SHA256 signature in the GitHub/Stripe shape. Stdlib only. |
+| `LogAnnounce` | `agent-wait` | A structured log line. The question never reaches INFO. |
+| `InMemoryAnnounce` | `agent-wait` | A list. For tests. |
+| `SnsAnnounce` | `agent-wait-aws` | A topic; policy `tags` become message attributes for subscription filters. |
+| `SqsAnnounce` | `agent-wait-aws` | A queue; on FIFO, grouped by thread and deduplicated on the stable key. |
+| `EventBridgeAnnounce` | `agent-wait-aws` | A bus, with the transition as detail-type. Notices partial failures behind a 200. |
+| `DynamoDbAnnounce` | `agent-wait-aws` | **A row.** `open` on `created`, `closed` on `resumed`. A GSI on `status` gives an approvals UI its query with no broker anywhere. |
 
-Pass as many as you like; `CompositeAnnounce` fans out and contains each one's failures
-separately. All seven ship on `BaseAnnounce`; Postgres, a Slack webhook, a file on disk are
-the same one method as `RedisAnnounce` above.
+Pass as many as you like; failures are contained per adapter.
 
 ## What the library does *not* do
 
-Deliberately. Each of these was in v0.1 and was removed with the machinery behind it:
+Deliberately — each of these is where teams' own opinions live:
 
-- **Receive answers.** No `dispatch()`, no inbound validation, no tokens.
+- **Receive answers.** No inbound endpoint, no validation, no tokens. The router above is yours.
 - **Enforce the timeout.** `expires_at` and `default` are published; a sweep of yours
-  sends the default when the deadline passes. There is a working one in
-  `examples/refund_agent/demo_scenarios.py`.
-- **Decide a race.** Two answers to one question: `pending()` rejects the late one, and
-  SQS FIFO keyed by thread stops them arriving at once. Without ordering, you need your
-  own conditional write.
-- **Authenticate.** Whoever can write to your entry point can answer. The queue policy is
-  the boundary.
-- **Store anything.** LangGraph's checkpoint is the only state. `pending()` reads it;
-  `republish()` re-announces from it.
+  sends the default when the deadline passes. There is a
+  [working one](https://github.com/skamalj/agent-wait/blob/main/examples/refund_agent/demo_scenarios.py)
+  in the example.
+- **Decide a race.** `pending()` rejects an answer the graph has already moved past.
+  Two *different* answers in the same instant are your transport's problem — SQS FIFO
+  keyed by thread solves it; an HTTP endpoint with concurrent handlers needs a
+  conditional write.
+- **Authenticate.** Whoever can write to your entry point can answer.
+- **Store anything.** LangGraph's checkpoint is the only state.
 
-If you need those guarantees in the library, [`v0.1.0`](docs/migrating-from-0.1.md) is
-tagged and its test report stands.
+## Two LangGraph 1.2.x behaviours you should know about
 
-## One `interrupt()` per node
+Both verified against 1.2.11, both pinned by tests that fail if LangGraph changes them.
 
-This is a hard rule, not a style preference. Two tools that both call `interrupt()`,
-dispatched together by one `ToolNode`, get **the same interrupt id** on langgraph 1.2.x
-([#6626](https://github.com/langchain-ai/langgraph/issues/6626)), and only one of them
-surfaces per invoke ([#6624](https://github.com/langchain-ai/langgraph/issues/6624)).
-A different question under an identical id defeats `dedupe_key`, and the task reports
-`result={}` while still parked, which defeats `pending()`. Both are pinned in
-`test_spike_langgraph.py`, so a LangGraph fix shows up as a failing test.
+**`get_state().tasks[*].interrupts` over-reports** ([#4796](https://github.com/langchain-ai/langgraph/issues/4796),
+[#6792](https://github.com/langchain-ai/langgraph/issues/6792)). Resume one of two parallel
+interrupts and the finished task still lists its id. `pending()` filters on `task.result`,
+which is `None` only while genuinely parked.
 
-Give each approval-requiring tool its own node. That is also the independently-reached
-advice in the LangGraph issue tracker and in the write-ups on double execution, for the
-unrelated reason that a node re-runs from the top on resume and any side effect *before*
-the `interrupt()` fires twice. `examples/refund_agent/graph.py` follows it.
+**Two interrupting tools in one `ToolNode` get the same id** ([#6626](https://github.com/langchain-ai/langgraph/issues/6626),
+[#6624](https://github.com/langchain-ai/langgraph/issues/6624)). A different question under
+an identical id defeats deduplication, and there is no filter for it. The rule is **one
+`interrupt()` per node** — give each approval-requiring tool its own node, which is also
+the fix for a node re-running its side effects on resume.
 
-## The one LangGraph bug you inherit
-
-`get_state().tasks[*].interrupts` over-reports (langgraph
-[#4796](https://github.com/langchain-ai/langgraph/issues/4796) /
-[#6792](https://github.com/langchain-ai/langgraph/issues/6792)). With two parallel
-interrupts, resume one, and the finished task still lists its interrupt id. Anything built
-naively on that list will republish an approval for a node that has already run.
-
-`pending()` filters on `task.result`, which is `None` only while a task is genuinely
-parked. A fixture pins the behaviour, so a LangGraph release that fixes it shows up as a
-failing test rather than as silence. Details in
-[docs/architecture.md](docs/architecture.md).
+Details: [Architecture](https://skamalj.github.io/agent-wait/architecture/).
 
 ## Layout
 
 ```
-packages/agent-wait        core. No LangGraph, no AWS. pyright strict.
+packages/agent-wait        core. No LangGraph, no AWS, no dependencies. pyright strict.
 packages/langgraph-wait    ask(), the adapter, resume_command(). The only LangGraph import.
-packages/agent-wait-aws    four announce adapters, and the CDK stack.
-examples/refund_agent      a graph, a router, and the scenarios against real AWS.
-docs/                      the message contract, the architecture, the 0.1 migration.
+packages/agent-wait-aws    four announce adapters, and a CDK stack.
+examples/refund_agent      a graph, a router, and four scenarios against real AWS.
+docs/                      message contract, architecture, consumer guide.
 ```
 
 ```bash
@@ -216,3 +196,5 @@ uv sync
 uv run pytest
 uv run ruff check . && uv run pyright
 ```
+
+MIT. Issues and PRs at [github.com/skamalj/agent-wait](https://github.com/skamalj/agent-wait).

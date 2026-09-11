@@ -15,8 +15,8 @@ transition, JSON body, three headers a receiver can route or verify on:
 
 The signature is `HMAC-SHA256(secret, raw body)`, hex-encoded, in the same shape GitHub
 and Stripe use. It answers one question for the receiver -- *did this come from the
-agent?* -- and nothing else. It is not a credential for answering: v0.2 has no inbound
-path to authorise, and this does not reintroduce one. `verify_signature()` is the
+agent?* -- and nothing else. It is not a credential for answering; the library has no
+inbound path and nothing here creates one. `verify_signature()` is the
 receiver's half, and is a pure function so it can be copied into a service that does not
 install this package.
 

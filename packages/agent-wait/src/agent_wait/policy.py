@@ -1,12 +1,12 @@
 """`WaitPolicy` -- what the author of an interrupt declares about the wait.
 
 Every field here is **advisory**. agent-wait publishes the policy and does nothing else
-with it: it does not enforce the timeout, it does not apply the default, it does not
-reject a disallowed action. It cannot -- since v0.2 the library never sees the answer.
+with it: it does not enforce the timeout, apply the default, or reject a disallowed
+action. It cannot -- the library never sees the answer.
 
-That is a deliberate trade (see `docs/migrating-from-0.1.md`). What these fields buy you
-is that the *world* is told the rules in a machine-readable way, on the same envelope as
-the question, so the system that does the enforcing has what it needs:
+What these fields buy you is that the *world* is told the rules in a machine-readable
+way, on the same envelope as the question, so whatever does the enforcing has what it
+needs:
 
 * `timeout` becomes `expires_at` -- an absolute instant, so a scheduler, a cron sweep or
   a UI countdown can act on it without re-parsing a duration;

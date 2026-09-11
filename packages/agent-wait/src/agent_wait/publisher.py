@@ -39,8 +39,8 @@ The caller has to know when to use it, and the rule is short enough to inline:
 **Do not re-invoke a parked thread with its original input.** LangGraph will treat it as
 a fresh turn, ask the question a second time, and give it a new interrupt id -- so the
 consumer sees two questions and the deduplication that repairs everything else cannot
-help. This is the one thing v0.1's store bought that the caller now has to remember, and
-it is why `pending()` is part of the public surface.
+help. This is the one rule the caller has to remember, and it is why `pending()` is part
+of the public surface.
 
 ## What happens if the graph raises
 
@@ -166,9 +166,9 @@ class WaitPublisher:
     def pending(self, thread_id: str) -> list[PendingInterrupt]:
         """What this thread is parked on. Read-only; publishes nothing.
 
-        This is the honest answer to "is this answer I just received still live, or did
-        somebody beat me to it?" -- which is a question you now own, and this is the
-        tool for it.
+        This is the answer to "is this answer I just received still live, or did
+        somebody beat me to it?" -- which is the caller's question, and this is the tool
+        for it.
         """
         return self.adapter.pending(thread_id)
 
