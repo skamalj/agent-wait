@@ -146,7 +146,10 @@ Because nothing reads state back through this library, "announce" doesn't have t
 | `EventBridgeAnnounce` | `agent-wait-aws` | A bus, with the transition as detail-type. Notices partial failures behind a 200. |
 | `DynamoDbAnnounce` | `agent-wait-aws` | **A row.** `open` on `created`, `closed` on `resumed`. A GSI on `status` gives an approvals UI its query with no broker anywhere. |
 
-Pass as many as you like; failures are contained per adapter.
+Pass as many as you like; failures are contained per adapter. The full guide — what
+`deliver()` receives, why `dedupe_key` is the one field to get right, patterns from the
+shipped adapters, and how to test yours:
+[Writing an announcer](https://skamalj.github.io/agent-wait/writing-an-announcer/).
 
 ## What the library does *not* do
 
@@ -188,7 +191,7 @@ packages/agent-wait        core. No LangGraph, no AWS, no dependencies. pyright 
 packages/langgraph-wait    ask(), the adapter, resume_command(). The only LangGraph import.
 packages/agent-wait-aws    four announce adapters, and a CDK stack.
 examples/refund_agent      a graph, a router, and four scenarios against real AWS.
-docs/                      message contract, architecture, consumer guide.
+docs/                      message contract, architecture, announcer guide, consumer guide.
 ```
 
 ```bash
