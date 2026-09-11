@@ -41,15 +41,21 @@ jobs:
           name: dist
           path: dist/
       - uses: astral-sh/setup-uv@v4
-      # The core package must land first: the other two depend on it and PyPI resolves
-      # dependencies at install time, not upload time, so order only matters for the
-      # smoke test below racing the index.
-      - run: uv publish dist/agent_wait-*
+      - id: token
+        run: echo "present=${{ secrets.PYPI_API_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+      # --check-url skips files already on the index, so re-running a tag (or tagging a
+      # version that was published by hand) is a no-op rather than a 400. The core
+      # package lands first because the other two depend on it.
+      - if: steps.token.outputs.present == 'true'
+        run: uv publish --check-url https://pypi.org/simple/ dist/agent_wait-*
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-      - run: uv publish dist/langgraph_wait-* dist/agent_wait_aws-*
+      - if: steps.token.outputs.present == 'true'
+        run: uv publish --check-url https://pypi.org/simple/ dist/langgraph_wait-* dist/agent_wait_aws-*
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      - if: steps.token.outputs.present != 'true'
+        run: echo "PYPI_API_TOKEN is not set; skipping upload. The smoke test below still runs against whatever PyPI serves for this version."
 
   smoke-from-pypi:
     needs: publish
