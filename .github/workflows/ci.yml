@@ -54,14 +54,7 @@ jobs:
           --cov-report=term-missing --cov-report=xml:reports/coverage.xml
 
       - name: Coverage floor
-        # At least 85% on agent_wait and langgraph_wait.
-        run: >
-          uv run python -c "
-          import xml.etree.ElementTree as ET, sys;
-          root = ET.parse('reports/coverage.xml').getroot();
-          rate = float(root.get('line-rate')) * 100;
-          print(f'total line coverage: {rate:.1f}%');
-          sys.exit(0 if rate >= 85 else 1)"
+        run: uv run python scripts/coverage_floor.py
 
       - name: Upload test evidence
         if: always()
