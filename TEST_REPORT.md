@@ -25,7 +25,7 @@ with the guarantees they carried moved explicitly to the caller.
 | Source lines | 3,438 | 1,302 |
 | Durable state the library owns | a single-table store, 5 key prefixes, 3 implementations | none |
 | AWS resources for the example | 2 tables, secret, schedule group, 2 roles, 2 Lambdas, rule, topic, bus, 2 queues | 2 tables, 1 Lambda, topic, 2 queues |
-| Tests | 367 | 137 |
+| Tests | 367 | 141 |
 
 The test count falling is not a regression in rigour; it is 114 conformance tests for a
 store that no longer exists, plus the dispatch decision table for a method that no longer
@@ -34,8 +34,9 @@ exists. Coverage went **up**, from 96%/100%/95% to 99% overall.
 ## 2. What was built
 
 **`agent_wait`** — `WaitPublisher` with three methods (`invoke`, `pending`, `republish`),
-`WaitPolicy`, `WaitEnvelope`, the `AnnounceAdapter` and `FrameworkAdapter` protocols, and
-three announce adapters (log, in-memory, failing). pyright strict, no dependencies.
+`WaitPolicy`, `WaitEnvelope`, the `AnnounceAdapter` and `FrameworkAdapter` protocols,
+`BaseAnnounce` (the contract implemented once; subclasses write `deliver()`), and three
+announce adapters (log, in-memory, failing). pyright strict, no dependencies.
 
 **`langgraph_wait`** — `ask()`, `LangGraphAdapter` (three methods), and the pure functions
 `is_answer()` / `resume_command()`.
@@ -96,7 +97,7 @@ is broken. Plus the example's DynamoDB checkpointer.
 ### Results
 
 ```
-137 passed, 4 skipped (the e2e level, opt-in)   in 21s
+141 passed, 4 skipped (the e2e level, opt-in)   in 21s
 ruff check      clean
 ruff format     clean, 57 files
 pyright strict  0 errors
@@ -211,6 +212,16 @@ Decisions taken while building, recorded rather than escalated.
     hammered. The module-scoped fixture writes `reports/langgraph-spike-observations.txt`
     on teardown and OneDrive file locks have caused exactly this kind of one-off in this
     repository before. Recorded, not chased.
+
+13. **`BaseAnnounce` added, at the owner's direction.** The `AnnounceAdapter` protocol
+    already existed, but all four AWS adapters carried identical `only=` handling,
+    `supports()` and try/except/log — the one rule in the contract, re-implemented four
+    times and left for every third party to remember. `BaseAnnounce` owns that; a provider
+    writes `deliver()` and nothing else, and a raise from it becomes a log line by
+    construction. All six shipped adapters were moved onto it. Net effect on the four AWS
+    files: −38 lines. The protocol stays, so duck-typed adapters are still accepted, and
+    `test_announce_base.py` proves both paths — including that a subclass which raises is
+    contained, and that a bare class which raises is contained too.
 
 ## 7. Open questions
 

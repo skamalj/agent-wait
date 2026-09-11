@@ -16,10 +16,12 @@ agent.republish(thread_id)  # announce it again -- repairs a lost announce
 `allowed_actions`, `tags`, `correlation`. Every field is advisory — this library publishes
 them and enforces none of them.
 
-Two protocols:
+Two protocols, and a base class:
 
 * **`AnnounceAdapter`** — `announce(envelope, transition)` and `supports(transition)`.
   The only thing you are expected to implement. Must not raise.
+* **`BaseAnnounce`** — implements that contract for you. Subclass it, write `deliver()`,
+  and a raise becomes a log line. Every shipped adapter is built on it.
 * **`FrameworkAdapter`** — `config_for()`, `invoke()`, `pending()`. Implemented once, in
   `langgraph-wait`; the protocol is what keeps LangGraph out of this package.
 

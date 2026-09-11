@@ -8,47 +8,40 @@ exist.
 
 from __future__ import annotations
 
-import logging
+from typing import Any
 
 import boto3
+from agent_wait.announce import BaseAnnounce
 from agent_wait.model import Transition, WaitEnvelope
 
-_log = logging.getLogger("agent_wait_aws.announce.sns")
 
-
-class SnsAnnounce:
+class SnsAnnounce(BaseAnnounce):
     name = "sns"
 
     def __init__(
         self,
         topic_arn: str,
         *,
-        client: object | None = None,
+        client: Any = None,
         region_name: str | None = None,
         only: tuple[Transition, ...] | None = None,
     ) -> None:
+        super().__init__(only=only)
         self.topic_arn = topic_arn
         self._client = client or boto3.client("sns", region_name=region_name)
-        self._only = only
 
-    def supports(self, transition: Transition) -> bool:
-        return self._only is None or transition in self._only
-
-    def announce(self, envelope: WaitEnvelope, transition: Transition) -> None:
-        try:
-            attributes: dict[str, dict[str, str]] = {
-                "transition": {"DataType": "String", "StringValue": transition},
-                "thread_id": {"DataType": "String", "StringValue": envelope.thread_id},
-            }
-            for key, value in envelope.tags.items():
-                # SNS rejects an empty StringValue, and a filter policy cannot use one.
-                if value:
-                    attributes[key] = {"DataType": "String", "StringValue": str(value)}
-            self._client.publish(  # type: ignore[attr-defined]
-                TopicArn=self.topic_arn,
-                Subject=f"wait.{transition}",
-                Message=envelope.to_json(),
-                MessageAttributes=attributes,
-            )
-        except Exception:
-            _log.exception("SnsAnnounce failed for interrupt %s (%s)", envelope.interrupt_id, transition)
+    def deliver(self, envelope: WaitEnvelope, transition: Transition) -> None:
+        attributes: dict[str, dict[str, str]] = {
+            "transition": {"DataType": "String", "StringValue": transition},
+            "thread_id": {"DataType": "String", "StringValue": envelope.thread_id},
+        }
+        for key, value in envelope.tags.items():
+            # SNS rejects an empty StringValue, and a filter policy cannot use one.
+            if value:
+                attributes[key] = {"DataType": "String", "StringValue": str(value)}
+        self._client.publish(
+            TopicArn=self.topic_arn,
+            Subject=envelope.type,
+            Message=envelope.to_json(),
+            MessageAttributes=attributes,
+        )

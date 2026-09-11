@@ -23,16 +23,14 @@ actually wants. The CDK stack in this package creates it.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import boto3
+from agent_wait.announce import BaseAnnounce
 from agent_wait.model import Transition, WaitEnvelope
 
-_log = logging.getLogger("agent_wait_aws.announce.dynamodb")
 
-
-class DynamoDbAnnounce:
+class DynamoDbAnnounce(BaseAnnounce):
     name = "dynamodb"
 
     def __init__(
@@ -44,24 +42,16 @@ class DynamoDbAnnounce:
         ttl_seconds: int | None = None,
         only: tuple[Transition, ...] | None = None,
     ) -> None:
+        super().__init__(only=only)
         self.table_name = table_name
         self._table = table or boto3.resource("dynamodb", region_name=region_name).Table(table_name)
         self._ttl_seconds = ttl_seconds
-        self._only = only
 
-    def supports(self, transition: Transition) -> bool:
-        return self._only is None or transition in self._only
-
-    def announce(self, envelope: WaitEnvelope, transition: Transition) -> None:
-        try:
-            if transition == "resumed":
-                self._close(envelope)
-            else:
-                self._open(envelope)
-        except Exception:
-            # The contract, same as every other adapter: log and return. A table being
-            # unreachable must not fail a run that has already parked.
-            _log.exception("DynamoDbAnnounce failed for interrupt %s (%s)", envelope.interrupt_id, transition)
+    def deliver(self, envelope: WaitEnvelope, transition: Transition) -> None:
+        if transition == "resumed":
+            self._close(envelope)
+        else:
+            self._open(envelope)
 
     def _open(self, envelope: WaitEnvelope) -> None:
         item: dict[str, Any] = {

@@ -109,19 +109,31 @@ Full schema, including how to deduplicate: [docs/message-formats.md](docs/messag
 
 ## Announcers
 
-An announcer is the only thing you are expected to implement, and the contract is one
-line long: **`announce()` must not raise.** If Slack is down, the graph still parked and
-the run still completes.
+An announcer is the only thing you are expected to implement. Subclass `BaseAnnounce`
+and write one method:
 
 ```python
-class MyAnnounce:
-    name = "mine"
+from agent_wait import BaseAnnounce
 
-    def supports(self, transition):
-        return True  # "created" / "resumed"
+class RedisAnnounce(BaseAnnounce):
+    name = "redis"
 
-    def announce(self, envelope, transition): ...  # log failures, never raise
+    def __init__(self, client, **kw):
+        super().__init__(**kw)
+        self.client = client
+
+    def deliver(self, envelope, transition):
+        self.client.set(envelope.dedupe_key, envelope.to_json())
 ```
+
+That is a complete adapter. The contract — **an announcer must never raise into the run**
+— is enforced by the base class: an exception from `deliver()` becomes a log line, and
+the graph that just parked stays parked. You also get `only=("created",)` for free, so a
+caller can restrict your adapter to new questions without you writing the filter.
+
+Subclassing is optional. `WaitPublisher` accepts anything with `name`, `supports()` and
+`announce()` — a `Protocol`, not a base class — and `CompositeAnnounce` contains failures
+either way. The base just makes the common case the correct case.
 
 Because nothing reads state back through this library, "announce" does not have to mean
 "publish an event". It means *put the question where whoever answers it will find it*.
@@ -137,8 +149,8 @@ That can be a broker — or it can be a table your UI already queries:
 | `DynamoDbAnnounce` | `agent-wait-aws` | **The question is the row.** `created` writes it `open`, `resumed` marks it `closed`. A GSI on `status` gives an approvals UI its query with no broker anywhere. |
 
 Pass as many as you like; `CompositeAnnounce` fans out and contains each one's failures
-separately. Redis, Postgres, a Slack webhook, a file on disk are all the same four lines
-as `MyAnnounce` above.
+separately. All six ship on `BaseAnnounce`; Postgres, a Slack webhook, a file on disk are
+the same one method as `RedisAnnounce` above.
 
 ## What the library does *not* do
 

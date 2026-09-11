@@ -21,6 +21,7 @@ on. It does not receive answers, hold state, mint credentials or run timers -- s
 
 from .announce import (
     AnnounceAdapter,
+    BaseAnnounce,
     CompositeAnnounce,
     FailingAnnounce,
     InMemoryAnnounce,
@@ -49,6 +50,7 @@ __version__ = "0.2.0"
 __all__ = [
     "MAX_QUESTION_BYTES",
     "AnnounceAdapter",
+    "BaseAnnounce",
     "Clock",
     "CompositeAnnounce",
     "EntryPoint",

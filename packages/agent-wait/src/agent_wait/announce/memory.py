@@ -7,19 +7,17 @@ other adapters still got their envelope.
 from __future__ import annotations
 
 from ..model import Transition, WaitEnvelope
+from .base import BaseAnnounce
 
 
-class InMemoryAnnounce:
+class InMemoryAnnounce(BaseAnnounce):
     name = "memory"
 
     def __init__(self, *, only: tuple[Transition, ...] | None = None) -> None:
+        super().__init__(only=only)
         self.events: list[tuple[Transition, WaitEnvelope]] = []
-        self._only = only
 
-    def supports(self, transition: Transition) -> bool:
-        return self._only is None or transition in self._only
-
-    def announce(self, envelope: WaitEnvelope, transition: Transition) -> None:
+    def deliver(self, envelope: WaitEnvelope, transition: Transition) -> None:
         self.events.append((transition, envelope))
 
     # -- test helpers --------------------------------------------------------
