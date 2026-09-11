@@ -5,9 +5,17 @@ person — can find it. Pass any number of them; each is called for every questi
 failure in one is logged and contained without affecting the others or the run.
 
 ```python
+from agent_wait import WebhookAnnounce
+from agent_wait_aws import DynamoDbAnnounce, SnsAnnounce
+from langgraph_wait import hitl, publish_interrupts
+
+# after a run
 publish_interrupts(result, thread_id, announce=[SnsAnnounce(topic_arn), DynamoDbAnnounce(table)])
 
+
+# or on an async function
 @hitl(FINANCE, mode="async", announce=[WebhookAnnounce(url, secret=SECRET)])
+def issue_refund(order_id: str, amount: int) -> str: ...
 ```
 
 Every shipped announcer puts `envelope.dedupe_key` — `"wait.created:<question_id>"`,
