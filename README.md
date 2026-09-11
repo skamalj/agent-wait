@@ -46,16 +46,16 @@ interrupts gets published with no edit at all.
 **In the host** — wire it once:
 
 ```python
-from agent_wait import EntryPoint, WaitPublisher
+from agent_wait import WaitPublisher
 from agent_wait_aws import SnsAnnounce
 from langgraph_wait import LangGraphAdapter
 
-agent = WaitPublisher(
-    LangGraphAdapter(graph),
-    announce=[SnsAnnounce(topic_arn)],
-    reply_to=EntryPoint("sqs", queue_url),
-)
+agent = WaitPublisher(LangGraphAdapter(graph), announce=[SnsAnnounce(topic_arn)])
 ```
+
+That is the whole constructor. There is an optional `reply_to=EntryPoint("sqs", queue_url)`
+if you want the envelope to tell consumers where your entry point is — the library never
+uses it itself, because it builds no return leg.
 
 **Then route each message.** Starts and answers arrive at the same place; `interrupt_id`
 tells them apart:
@@ -98,8 +98,9 @@ That is the complete integration. `examples/refund_agent/` is it, deployed.
 ```
 
 `reply_with` is a filled-in stub: the consumer copies it, sets `answer`, and posts it to
-`reply_to`. Whatever goes in `answer` is what the `ask()` call returns — verbatim, with
-nothing merged into it.
+wherever your agent listens. Whatever goes in `answer` is what the `ask()` call returns —
+verbatim, with nothing merged into it. `reply_to` is `null` unless you chose to publish an
+address; it is a hint, not a mechanism.
 
 A second envelope, `wait.resumed`, goes out when the graph moves past the question, so a
 UI knows to retract the button.
@@ -150,8 +151,8 @@ Deliberately. Each of these was in v0.1 and was removed with the machinery behin
 - **Decide a race.** Two answers to one question: `pending()` rejects the late one, and
   SQS FIFO keyed by thread stops them arriving at once. Without ordering, you need your
   own conditional write.
-- **Authenticate.** Whoever can write to `reply_to` can answer. The queue policy is the
-  boundary.
+- **Authenticate.** Whoever can write to your entry point can answer. The queue policy is
+  the boundary.
 - **Store anything.** LangGraph's checkpoint is the only state. `pending()` reads it;
   `republish()` re-announces from it.
 

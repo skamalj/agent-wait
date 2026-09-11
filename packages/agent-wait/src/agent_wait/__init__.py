@@ -10,9 +10,7 @@ A graph node asks a question and pauses:
 The host runs the graph through a publisher, and whatever the graph parked on goes out
 to wherever people can see it:
 
-    agent = WaitPublisher(LangGraphAdapter(graph),
-                          announce=[SnsAnnounce(topic_arn)],
-                          reply_to=EntryPoint("sqs", queue_url))
+    agent = WaitPublisher(LangGraphAdapter(graph), announce=[SnsAnnounce(topic_arn)])
 
     agent.invoke(payload, thread_id)
 

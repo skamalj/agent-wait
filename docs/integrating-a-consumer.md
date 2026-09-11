@@ -40,7 +40,8 @@ else answered, or because a timeout sweep sent the default. Either way: close th
 
 ## 2. Reply
 
-The envelope contains a filled-in reply. Copy it, set `answer`, and post it to `reply_to`.
+The envelope contains a filled-in reply. Copy it, set `answer`, and post it to the agent's
+entry point.
 
 ```python
 def on_click(envelope: dict, action: str) -> None:
@@ -48,9 +49,11 @@ def on_click(envelope: dict, action: str) -> None:
     send_to(envelope["reply_to"], body)
 ```
 
-That is the whole protocol. Do not construct the message yourself and do not hardcode the
-destination — `reply_to` is how the agent tells you where it listens, and it differs
-between environments.
+That is the whole protocol. Do not construct the message yourself. The destination is
+`reply_to` if the host chose to publish one — it may differ between environments, so prefer
+it over a hardcoded address — and otherwise it is whatever queue or endpoint you were told
+the agent listens on. `reply_to` is a hint the host can leave out; the library itself
+never reads it.
 
 ### `answer` is returned verbatim
 
@@ -144,5 +147,5 @@ A working sweep is `scenario_b` in `examples/refund_agent/demo_scenarios.py`.
 
 * It does not check your `action` against `allowed_actions`.
 * It does not enforce `expires_at`.
-* It does not authenticate you. Whoever can write to `reply_to` can answer any open
-  question on it.
+* It does not authenticate you. Whoever can write to the agent's entry point can answer
+  any open question on it.

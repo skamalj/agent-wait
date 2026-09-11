@@ -62,6 +62,8 @@ agent = WaitPublisher(
         # directly instead of building a projection off the topic.
         DynamoDbAnnounce(os.environ["AGENT_WAIT_APPROVALS_TABLE"]),
     ],
+    # Optional. The library builds no return leg and never reads this; it is published
+    # so a consumer does not have to hardcode which queue this environment's agent is on.
     reply_to=EntryPoint("sqs", os.environ["AGENT_WAIT_QUEUE_URL"]),
 )
 

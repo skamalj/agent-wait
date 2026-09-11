@@ -49,7 +49,7 @@ topic, your queue, your bus, or as a row in your table.
 | `allowed_actions` | Which answers are meaningful. **Advisory** — see below. |
 | `expires_at` | RFC 3339 UTC, or `null` when the wait has no timeout. **Advisory.** |
 | `default` | What the graph's author said to assume if nobody answers. **Advisory.** |
-| `reply_to` | Where to send the answer. The agent's own entry point. |
+| `reply_to` | **Optional; `null` unless the host set one.** A hint for where to send the answer. The library never uses it — it builds no return leg. |
 | `reply_with` | A filled-in reply. Copy it, set `answer`, post it to `reply_to`. |
 | `correlation` | `{"provider": …, "id": …}` when the wait is tied to an external job; else `null`. |
 | `tags` | Routing hints from the policy. Become SNS message attributes, so filter policies can use them. |
@@ -76,9 +76,9 @@ passes through this library. See `migrating-from-0.1.md`.
 1. **Dedupe on `type` + `interrupt_id`.**
 2. **Render `question` and offer exactly `allowed_actions`.** Nothing will refuse a
    third button, which is precisely why you should not draw one.
-3. **Answer by copying `reply_with`** — set `answer`, post it to `reply_to`. Do not
-   hardcode an endpoint; `reply_to` is how the agent tells you where it listens, and it
-   differs per environment.
+3. **Answer by copying `reply_with`** — set `answer`, post it to the agent's entry
+   point. If the host published a `reply_to`, that is the address and it may differ per
+   environment; if it is `null`, your integration already knows where the agent listens.
 4. **Treat `wait.resumed` as "close the ticket".** It may arrive because somebody else
    answered, or because a timeout sweep sent the default.
 
@@ -86,7 +86,8 @@ passes through this library. See `migrating-from-0.1.md`.
 
 ## 2. The answer message (inbound)
 
-Send this to `reply_to`. On an SQS FIFO entry point, use `MessageGroupId = thread_id`.
+Send this to the agent's entry point (`reply_to`, if published). On an SQS FIFO entry
+point, use `MessageGroupId = thread_id`.
 
 ```json
 {
@@ -171,7 +172,7 @@ The list is short, and it is the price of the library being this small.
 | Deciding start vs resume | you | `interrupt_id` present or not |
 | Not re-asking a parked thread | you | `pending()` then `republish()` |
 | Enforcing `expires_at` | you | a scheduled sweep over your open questions, sending `default` |
-| Authenticating an answer | you | the queue policy / authoriser in front of `reply_to` |
+| Authenticating an answer | you | the queue policy / authoriser in front of your entry point |
 | Rejecting a stale answer | you | `pending()` before invoking; see `is_still_open()` |
 | Serialising two answers to one question | your transport | SQS FIFO with `MessageGroupId = thread_id` |
 

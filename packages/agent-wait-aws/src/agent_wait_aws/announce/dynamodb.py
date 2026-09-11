@@ -73,13 +73,14 @@ class DynamoDbAnnounce:
             "question": envelope.question,
             "allowed_actions": list(envelope.allowed_actions),
             "expires_at": envelope.expires_at,
-            "reply_to": dict(envelope.reply_to),
             "reply_with": dict(envelope.reply_with),
             "tags": dict(envelope.tags),
             "event_id": envelope.event_id,
         }
         if envelope.default is not None:
             item["default"] = envelope.default
+        if envelope.reply_to:
+            item["reply_to"] = dict(envelope.reply_to)
         if self._ttl_seconds:
             item["ttl"] = int(_now()) + self._ttl_seconds
         self._table.put_item(Item=item)

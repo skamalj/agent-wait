@@ -186,3 +186,22 @@ def test_pending_publishes_nothing(rig: Rig) -> None:
     rig.agent.pending("t")
 
     assert rig.announce.events == []
+
+
+# ------------------------------------------------------------------ reply_to
+def test_reply_to_is_optional_because_there_is_no_return_leg() -> None:
+    """The library never listens anywhere, so it never needs to know where the agent
+    lives. `reply_to` is a hint for a consumer somebody else builds; without it the
+    envelope says `null` and everything else is identical."""
+    adapter = StubAdapter()
+    announce = InMemoryAnnounce()
+    agent = WaitPublisher(adapter, announce=[announce])
+    adapter.on_invoke = lambda: adapter.park("t", "int-1")
+
+    agent.invoke(None, "t")
+
+    envelope = announce.last()
+    assert envelope is not None
+    assert envelope.reply_to is None
+    assert envelope.to_dict()["reply_to"] is None
+    assert envelope.reply_with == {"thread_id": "t", "interrupt_id": "int-1", "answer": None}

@@ -25,7 +25,7 @@ with the guarantees they carried moved explicitly to the caller.
 | Source lines | 3,438 | 1,302 |
 | Durable state the library owns | a single-table store, 5 key prefixes, 3 implementations | none |
 | AWS resources for the example | 2 tables, secret, schedule group, 2 roles, 2 Lambdas, rule, topic, bus, 2 queues | 2 tables, 1 Lambda, topic, 2 queues |
-| Tests | 367 | 136 |
+| Tests | 367 | 137 |
 
 The test count falling is not a regression in rigour; it is 114 conformance tests for a
 store that no longer exists, plus the dispatch decision table for a method that no longer
@@ -58,7 +58,7 @@ what makes the host's start-vs-resume rule a one-line check rather than a conven
 | Removed | Who owns the guarantee now |
 |---|---|
 | `dispatch()` and 11 `Ignore` reasons | the host's router — a dozen lines, in the example |
-| Tokens, key rotation, binding hash | the queue policy in front of `reply_to` |
+| Tokens, key rotation, binding hash | the queue policy in front of your entry point |
 | The wait store (memory / SQLite / DynamoDB) | nobody — LangGraph's checkpoint is the state |
 | Leases, idempotency keys, parked answers | the transport (SQS FIFO keyed by thread) |
 | The sweeper | `republish()`, called by the router on a redelivery |
@@ -96,7 +96,7 @@ is broken. Plus the example's DynamoDB checkpointer.
 ### Results
 
 ```
-136 passed, 4 skipped (the e2e level, opt-in)   in 21s
+137 passed, 4 skipped (the e2e level, opt-in)   in 21s
 ruff check      clean
 ruff format     clean, 57 files
 pyright strict  0 errors
@@ -197,6 +197,20 @@ Decisions taken while building, recorded rather than escalated.
     example builds a DynamoDB checkpointer and an SNS client at module scope. The
     duplication is nine lines and is called out in the file: if the two disagree, the
     example is authoritative, because it is the one people copy.
+
+11. **`reply_to` made optional, at the owner's direction.** It had been a required
+    constructor argument out of v0.1 habit. The library builds no return leg and never
+    reads the value, so requiring it was requiring the caller to describe a mechanism that
+    does not exist. It stays as an optional hint published on the envelope for a consumer
+    somebody else writes; absent, the envelope says `null`.
+
+12. **One spike-test failure in twenty runs, not reproduced.** `test_known_bug_tasks_over_
+    report_after_a_partial_parallel_resume` failed once during the `reply_to` change and
+    then passed 19 consecutive times, including 15 in a tight loop. That test asserts the
+    LangGraph over-report *is present*; an intermittent absence would matter, so it was
+    hammered. The module-scoped fixture writes `reports/langgraph-spike-observations.txt`
+    on teardown and OneDrive file locks have caused exactly this kind of one-off in this
+    repository before. Recorded, not chased.
 
 ## 7. Open questions
 

@@ -99,8 +99,11 @@ def _no_str_map() -> dict[str, str]:
 
 @dataclass(frozen=True)
 class EntryPoint:
-    """Where the agent listens. Published as `reply_to` so a consumer never has to
-    hardcode an address that differs between environments."""
+    """Where the agent listens, if you want consumers told.
+
+    Optional. agent-wait builds no return leg, so it never needs this itself; it is
+    published as `reply_to` purely as a hint, so that a consumer you write does not have
+    to hardcode an address that differs between environments."""
 
     kind: Literal["sqs", "lambda", "http"]
     address: str
@@ -139,8 +142,8 @@ class WaitEnvelope:
     question: Any
     allowed_actions: tuple[str, ...]
     expires_at: str | None
-    reply_to: Mapping[str, str]
     reply_with: Mapping[str, Any]
+    reply_to: Mapping[str, str] | None = None
     default: Any = None
     correlation: Mapping[str, str] | None = None
     tags: Mapping[str, str] = field(default_factory=_no_str_map)
@@ -167,7 +170,7 @@ class WaitEnvelope:
             "allowed_actions": list(self.allowed_actions),
             "expires_at": self.expires_at,
             "default": self.default,
-            "reply_to": dict(self.reply_to),
+            "reply_to": dict(self.reply_to) if self.reply_to else None,
             "reply_with": dict(self.reply_with),
             "correlation": dict(self.correlation) if self.correlation else None,
             "tags": dict(self.tags),

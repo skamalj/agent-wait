@@ -15,7 +15,7 @@ envelope leaves the process is yours.
 | v0.1 | v0.2 |
 |---|---|
 | `ask(question, policy)` | unchanged |
-| `WaitRuntime(adapter=, store=, tokens=, announce=, entry_point=)` | `WaitPublisher(adapter, announce=, reply_to=)` |
+| `WaitRuntime(adapter=, store=, tokens=, announce=, entry_point=)` | `WaitPublisher(adapter, announce=)` — `reply_to=` optional, a hint only |
 | `runtime.dispatch(message)` → `Start`/`Resume`/`Ignore` | gone — you decide, on `interrupt_id` |
 | `runtime.register(result, config, thread_id)` | gone — folded into `invoke()` |
 | `graph.invoke(...)` in your handler | `agent.invoke(value, thread_id)` |
@@ -122,7 +122,7 @@ before sending (or you race a human answering at the deadline), and send the aut
 ### 3. Authentication
 
 There is no token, so there is nothing to verify and nothing to leak. The flip side is
-that anyone who can put a message on `reply_to` can answer any question on it. The queue
+that anyone who can put a message on your entry point can answer any question on it. The queue
 policy, the authoriser, the IAM role — those are now the entire security boundary.
 
 If you were relying on tokens to let an approver answer from an email link without any

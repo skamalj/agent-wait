@@ -109,9 +109,17 @@ class WaitPublisher:
         adapter: FrameworkAdapter,
         *,
         announce: Sequence[AnnounceAdapter],
-        reply_to: EntryPoint,
+        reply_to: EntryPoint | None = None,
         clock: Clock | None = None,
     ) -> None:
+        """`reply_to` is a hint for consumers, and nothing more.
+
+        This library builds no return leg. It does not listen anywhere, does not receive
+        answers and does not verify them -- so it has no need to know where the agent
+        lives. If you *do* build a return leg and want the envelope to tell consumers
+        where it is, pass an `EntryPoint` and it is published verbatim. Leave it out and
+        `reply_to` is `null`, which is fine for any consumer that already knows.
+        """
         self.adapter = adapter
         self.announce = CompositeAnnounce(announce)
         self.reply_to = reply_to
@@ -180,7 +188,7 @@ class WaitPublisher:
             question=interrupt.question,
             allowed_actions=policy.allowed_actions,
             expires_at=iso(asked_at + timeout) if timeout else None,
-            reply_to=self.reply_to.to_dict(),
+            reply_to=self.reply_to.to_dict() if self.reply_to is not None else None,
             # A filled-in stub, not a description of one. The consumer replaces `answer`
             # and posts this back to `reply_to`; the presence of `interrupt_id` is what
             # makes it a resume rather than a start.
