@@ -1,4 +1,4 @@
-# TEST_REPORT — agent-wait v0.4.0
+# TEST_REPORT — agent-wait v0.4.1
 
 Supersedes the v0.3 report. Earlier reports are at their tags.
 
@@ -14,8 +14,8 @@ incompatible and not supported.
 
 **Verified:** local unit and integration levels; every announcer against moto or a real
 local HTTP server; the smoke test against the built wheels from a clean venv. **Not
-verified:** the deployed AWS run (§5), and the PyPI round trip until 0.4.0 is published —
-the release workflow does that on the tag.
+verified:** the deployed AWS run (§5). The PyPI round trip is verified by the release
+workflow on every tag: install from the index into a clean Ubuntu venv, run the smoke test.
 
 ---
 
@@ -27,7 +27,7 @@ the release workflow does that on the tag.
 | `langgraph_wait` public names | `ask`, `unwrap`, `WAIT_KEY`, `hitl`, `policy_for`, `question_id_for`, `questions_in`, `publish_interrupts` | `hitl`, `publish_interrupts`, `questions_in` |
 | `HumanInTheLoopMiddleware` | one envelope per batch | not supported; documented as incompatible |
 | Dev dependencies | + `langchain` | removed |
-| Tests | 133 | 126 |
+| Tests | 133 | 125 |
 | Coverage | 98% | 98% |
 
 ## 2. What was built
@@ -98,7 +98,7 @@ GSI query; overwrite on republish; the example's checkpointer.
 ### Results
 
 ```
-126 passed, 4 skipped (the e2e level, opt-in)
+125 passed, 4 skipped (the e2e level, opt-in)
 ruff check      clean
 ruff format     clean
 pyright strict  0 errors
@@ -163,6 +163,15 @@ inside a node. "The model sees pending and says something sensible" needs a mode
 9. **The smoke test caught its own mistake.** Its `review(s, decision=None)` named the
    state parameter `s`, so `question.args` had key `s`, not `state`. That is the rule
    working — `args` keys are the function's real parameter names — and the test was wrong.
+
+10. **0.4.1 is docs only, after the owner's review of the site.** Five changes: the
+    configurable `decision` name shown beside its example; a dedicated Announcers page,
+    taking the DynamoDB row shape out of the message contract where it did not belong; the
+    "without subclassing" path removed from the announcer guide (one way to write one),
+    and the test that exercised it removed so the code does not advertise what the docs
+    do not; the `get_state()` aside removed from the architecture page; the migrating page
+    removed, since nobody has migrated. Every python block in the docs is parsed and every
+    import resolved by a script before publishing.
 
 ## 7. Open questions
 

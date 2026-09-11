@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 — 2026-09-11
+
+Documentation only, after review. A dedicated Announcers page with every shipped
+announcer's constructor and behaviour; the configurable `decision` parameter name shown
+next to its example; the announcer guide describes one way to write one. No code changes.
+
 ## 0.4.0 — 2026-09-11
 
 **`@hitl` is the only way to declare a question.** `ask()` is gone; the decorator makes
