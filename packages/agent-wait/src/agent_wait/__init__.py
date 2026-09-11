@@ -26,6 +26,8 @@ from .announce import (
     FailingAnnounce,
     InMemoryAnnounce,
     LogAnnounce,
+    WebhookAnnounce,
+    verify_signature,
 )
 from .errors import PolicyError, QuestionTooLarge, WaitError
 from .model import (
@@ -68,10 +70,12 @@ __all__ = [
     "WaitError",
     "WaitPolicy",
     "WaitPublisher",
+    "WebhookAnnounce",
     "__version__",
     "canonical_json",
     "check_question_size",
     "iso",
     "new_ulid",
     "parse_duration",
+    "verify_signature",
 ]

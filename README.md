@@ -115,6 +115,7 @@ and write one method:
 ```python
 from agent_wait import BaseAnnounce
 
+
 class RedisAnnounce(BaseAnnounce):
     name = "redis"
 
@@ -143,13 +144,14 @@ That can be a broker — or it can be a table your UI already queries:
 |---|---|---|
 | `LogAnnounce` | `agent-wait` | A structured line per transition. The question never reaches INFO. |
 | `InMemoryAnnounce` | `agent-wait` | Collects envelopes. For tests. |
+| `WebhookAnnounce` | `agent-wait` | POSTs the envelope as JSON. Stdlib only. Optional HMAC-SHA256 signature in the GitHub/Stripe shape; `verify_signature()` is the receiver's half. |
 | `SnsAnnounce` | `agent-wait-aws` | Publishes; policy `tags` become message attributes, so subscription filters can route. |
 | `SqsAnnounce` | `agent-wait-aws` | Sends to a queue; on FIFO, groups by thread and dedupes on the stable key. |
 | `EventBridgeAnnounce` | `agent-wait-aws` | `PutEvents` with the transition as detail-type. Notices partial failures, which return HTTP 200. |
 | `DynamoDbAnnounce` | `agent-wait-aws` | **The question is the row.** `created` writes it `open`, `resumed` marks it `closed`. A GSI on `status` gives an approvals UI its query with no broker anywhere. |
 
 Pass as many as you like; `CompositeAnnounce` fans out and contains each one's failures
-separately. All six ship on `BaseAnnounce`; Postgres, a Slack webhook, a file on disk are
+separately. All seven ship on `BaseAnnounce`; Postgres, a Slack webhook, a file on disk are
 the same one method as `RedisAnnounce` above.
 
 ## What the library does *not* do

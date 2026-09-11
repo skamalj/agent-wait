@@ -16,6 +16,9 @@ agent.republish(thread_id)  # announce it again -- repairs a lost announce
 `allowed_actions`, `tags`, `correlation`. Every field is advisory — this library publishes
 them and enforces none of them.
 
+Three announcers ship in core: `LogAnnounce`, `InMemoryAnnounce`, and `WebhookAnnounce`
+(stdlib `urllib`, optional HMAC signature, `verify_signature()` for the receiver).
+
 Two protocols, and a base class:
 
 * **`AnnounceAdapter`** — `announce(envelope, transition)` and `supports(transition)`.

@@ -77,7 +77,40 @@ FIFO queue keyed by thread, it is serialised and you are fine.
 
 ---
 
-## 3. If the questions land in a table instead
+## 3. If the questions arrive as a webhook
+
+`WebhookAnnounce` POSTs each envelope to your URL as JSON, with three headers:
+
+```
+X-Agent-Wait-Event:       wait.created | wait.resumed
+X-Agent-Wait-Dedupe-Key:  wait.created:<interrupt_id>
+X-Agent-Wait-Signature:   sha256=<hex>        (if the host configured a secret)
+```
+
+Route on the first, deduplicate on the second, and verify the third before you trust the
+body — it is `HMAC-SHA256(secret, raw body)`, the same shape GitHub and Stripe use:
+
+```python
+import hashlib, hmac
+
+def verify(secret: bytes, raw_body: bytes, header: str | None) -> bool:
+    if not header:
+        return False
+    expected = "sha256=" + hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header)
+```
+
+(`agent_wait.verify_signature` is the same function, if you happen to have the package.)
+
+Answer with any 2xx. Anything else is logged on the agent side and **not retried** — the
+question is re-sent the next time the thread is re-invoked, with the same dedupe key. If
+your receiver is down for an hour, expect one POST per redelivery in that hour and dedupe
+accordingly; do not expect a backoff schedule.
+
+The signature says the POST came from the agent. It does not say who is allowed to
+answer; that is still your entry point's business.
+
+## 4. If the questions land in a table instead
 
 `DynamoDbAnnounce` writes each question as a row rather than publishing an event, which is
 often a better fit for an approvals UI: you query for open questions instead of maintaining
@@ -109,7 +142,7 @@ is still something to show when someone asks why the button disappeared.
 
 ---
 
-## 4. Somebody has to enforce the timeout
+## 5. Somebody has to enforce the timeout
 
 **The agent will not.** `expires_at` and `default` are published as information; nothing
 acts on them. If nobody runs a sweep, an unanswered question waits forever.
@@ -135,7 +168,7 @@ A working sweep is `scenario_b` in `examples/refund_agent/demo_scenarios.py`.
 
 ---
 
-## 5. What the agent guarantees you
+## 6. What the agent guarantees you
 
 * The question will be published **at least once**. Deduplicate on `type` + `interrupt_id`.
 * `interrupt_id` is stable for as long as the question stands.

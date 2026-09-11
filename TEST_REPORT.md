@@ -25,7 +25,7 @@ with the guarantees they carried moved explicitly to the caller.
 | Source lines | 3,438 | 1,302 |
 | Durable state the library owns | a single-table store, 5 key prefixes, 3 implementations | none |
 | AWS resources for the example | 2 tables, secret, schedule group, 2 roles, 2 Lambdas, rule, topic, bus, 2 queues | 2 tables, 1 Lambda, topic, 2 queues |
-| Tests | 367 | 142 |
+| Tests | 367 | 147 |
 
 The test count falling is not a regression in rigour; it is 114 conformance tests for a
 store that no longer exists, plus the dispatch decision table for a method that no longer
@@ -35,8 +35,9 @@ exists. Coverage went **up**, from 96%/100%/95% to 99% overall.
 
 **`agent_wait`** — `WaitPublisher` with three methods (`invoke`, `pending`, `republish`),
 `WaitPolicy`, `WaitEnvelope`, the `AnnounceAdapter` and `FrameworkAdapter` protocols,
-`BaseAnnounce` (the contract implemented once; subclasses write `deliver()`), and three
-announce adapters (log, in-memory, failing). pyright strict, no dependencies.
+`BaseAnnounce` (the contract implemented once; subclasses write `deliver()`), and four
+announce adapters: log, in-memory, failing, and webhook. pyright strict, no dependencies —
+the webhook uses stdlib `urllib` and `hmac`.
 
 **`langgraph_wait`** — `ask()`, `LangGraphAdapter` (three methods), and the pure functions
 `is_answer()` / `resume_command()`.
@@ -70,11 +71,13 @@ what makes the host's start-vs-resume rule a one-line check rather than a conven
 
 ## 4. How it was tested
 
-**Level 1 — unit (38 tests).** `WaitPublisher` against a `StubAdapter`, so the awkward
+**Level 1 — unit (47 tests).** `WaitPublisher` against a `StubAdapter`, so the awkward
 cases are three-line tests: a run that closes one question and opens another, a crash
 between run and announce, an announcer that raises, an adapter that opts out of a
 transition. Policy parsing, the envelope's exact field set, and `LogAnnounce` never putting
-the question at INFO.
+the question at INFO. `WebhookAnnounce` is tested against a real `http.server` on a random
+port, not a mocked `urlopen`: what arrives on the wire is the point, so the wire is what is
+asserted — headers, body, signature, and that a 503 or an unreachable host is a log line.
 
 **Level 2 — LangGraph, for real (26 tests).** A real graph, a real checkpointer, real
 interrupts. `test_adapter.py` covers `pending()` including the over-report filter;
@@ -97,11 +100,11 @@ is broken. Plus the example's DynamoDB checkpointer.
 ### Results
 
 ```
-142 passed, 4 skipped (the e2e level, opt-in)   in 21s
+147 passed, 4 skipped (the e2e level, opt-in)   in 10s
 ruff check      clean
 ruff format     clean, 57 files
 pyright strict  0 errors
-coverage        99% (434 statements, 6 missed)
+coverage        99% (466 statements, 2 missed)
 ```
 
 The six missed statements are `supports()` early-returns in adapters whose failure paths
@@ -237,6 +240,15 @@ Decisions taken while building, recorded rather than escalated.
     did not. The probe took twenty lines and found a shape on which two of our three core
     assumptions fail. It is now a spike test with the observation recorded verbatim, and a
     stated rule rather than a silent gap.
+
+15. **`WebhookAnnounce`, at the owner's suggestion.** Stdlib only, so it lives in core. It
+    signs the body HMAC-SHA256 in the GitHub/Stripe shape when given a secret, and ships
+    `verify_signature()` as a pure function for the receiver. This is outbound
+    authenticity — *did this POST come from the agent* — and deliberately not a
+    credential for answering; v0.2 has no inbound path to authorise and this does not
+    reintroduce one. No retry, by the same reasoning as every other adapter:
+    `republish()` is the retry. The timeout defaults to five seconds because the POST runs
+    inside the agent's own invocation and a slow receiver must not stretch it.
 
 ## 7. Open questions
 
