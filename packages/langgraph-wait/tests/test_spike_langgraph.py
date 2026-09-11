@@ -360,3 +360,93 @@ def test_a_subgraph_interrupt_resumes_through_the_parent() -> None:
 
     assert final["v"] == {"done": True}
     assert graph.get_state(config).tasks == ()
+
+
+# ================================================== two interrupting tools, one ToolNode
+def toolnode_graph() -> Any:
+    """Two tools that each call `interrupt()`, dispatched together by one `ToolNode`.
+
+    This is the shape langgraph #6624 and #6626 are about, and it is *not* the shape the
+    parallel tests above use (those are two nodes). It is the shape a tool-calling agent
+    produces naturally, which is why it is recorded here rather than assumed to behave
+    like the node case.
+    """
+    from langchain_core.messages import AIMessage
+    from langchain_core.tools import tool
+    from langgraph.graph import MessagesState
+    from langgraph.prebuilt import ToolNode
+
+    @tool
+    def approve_a(x: str) -> str:
+        """needs approval"""
+        return str(interrupt({"which": "a", "x": x}))
+
+    @tool
+    def approve_b(x: str) -> str:
+        """needs approval"""
+        return str(interrupt({"which": "b", "x": x}))
+
+    def fake_llm(state: Any) -> Any:
+        calls = [
+            {"name": "approve_a", "args": {"x": "1"}, "id": "call_a"},
+            {"name": "approve_b", "args": {"x": "2"}, "id": "call_b"},
+        ]
+        return {"messages": [AIMessage(content="", tool_calls=calls)]}
+
+    graph = StateGraph(MessagesState)
+    graph.add_node("llm", fake_llm)
+    graph.add_node("tools", ToolNode([approve_a, approve_b]))
+    graph.add_edge(START, "llm")
+    graph.add_edge("llm", "tools")
+    graph.add_edge("tools", END)
+    return graph.compile(checkpointer=InMemorySaver())
+
+
+def test_known_limitation_two_interrupting_tools_in_one_toolnode_share_an_id() -> None:
+    """langgraph #6624 + #6626, as observed. This is a shape agent-wait does NOT support.
+
+    Two things happen, and both break the assumptions the rest of this library rests on:
+
+    1. Only ONE interrupt surfaces per invoke. The second tool's question appears only
+       after the first is resumed (#6624).
+    2. When it does, it carries THE SAME interrupt id as the first (#6626) -- a different
+       question under an identical id -- and the task reports `result={}` while it is
+       still genuinely parked.
+
+    For agent-wait that means `dedupe_key` would make a consumer discard the second
+    question as a duplicate of the first, and `pending()` would read `result={}` as
+    finished. The rule this pins is therefore: **one `interrupt()` per node.** Put each
+    approval-requiring tool in its own node, which is also what #6208's workaround and the
+    "double execution" write-ups arrive at independently.
+
+    Asserted so that a LangGraph release which fixes it fails this test and the docs get
+    updated, rather than the limitation quietly persisting in prose.
+    """
+    graph = toolnode_graph()
+    config = {"configurable": {"thread_id": "tn1"}}
+
+    first_run = graph.invoke({"messages": []}, config)
+    first = first_run["__interrupt__"]
+    second_run = graph.invoke(Command(resume={first[0].id: "ok-a"}), config)
+    second = second_run["__interrupt__"]
+    parked_tasks = _tasks(graph, config)
+    final = graph.invoke(Command(resume={second[0].id: "ok-b"}), config)
+
+    record("== TOOLNODE: two tools that both interrupt, dispatched by one ToolNode ==")
+    record(f"  first invoke raised      = {[(short(i.id), i.value) for i in first]}")
+    record(f"  after resuming it        = {[(short(i.id), i.value) for i in second]}")
+    record(f"  same id for both?        = {second[0].id == first[0].id}")
+    record(f"  tasks while parked on b  = {parked_tasks}")
+    record(f"  after resuming b         = {len(final.get('__interrupt__', []))} interrupts left")
+    record("  -> #6624: only one interrupt surfaces per invoke, not two.")
+    record("  -> #6626: the second carries the SAME id as the first. A different question,")
+    record("     an identical id. dedupe_key would drop it; pending() would read result={}")
+    record("     as finished. agent-wait's rule: one interrupt() per node.")
+    record()
+
+    assert len(first) == 1, "if two now surface, #6624 is fixed -- update the docs"
+    assert first[0].value["which"] == "a"
+    assert second[0].value["which"] == "b"
+    assert second[0].id == first[0].id, "if ids now differ, #6626 is fixed -- update the docs"
+    assert parked_tasks[0][2] is not None, "result is not None while still parked on b"
+    assert final.get("__interrupt__", []) == []

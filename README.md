@@ -171,6 +171,21 @@ Deliberately. Each of these was in v0.1 and was removed with the machinery behin
 If you need those guarantees in the library, [`v0.1.0`](docs/migrating-from-0.1.md) is
 tagged and its test report stands.
 
+## One `interrupt()` per node
+
+This is a hard rule, not a style preference. Two tools that both call `interrupt()`,
+dispatched together by one `ToolNode`, get **the same interrupt id** on langgraph 1.2.x
+([#6626](https://github.com/langchain-ai/langgraph/issues/6626)), and only one of them
+surfaces per invoke ([#6624](https://github.com/langchain-ai/langgraph/issues/6624)).
+A different question under an identical id defeats `dedupe_key`, and the task reports
+`result={}` while still parked, which defeats `pending()`. Both are pinned in
+`test_spike_langgraph.py`, so a LangGraph fix shows up as a failing test.
+
+Give each approval-requiring tool its own node. That is also the independently-reached
+advice in the LangGraph issue tracker and in the write-ups on double execution, for the
+unrelated reason that a node re-runs from the top on resume and any side effect *before*
+the `interrupt()` fires twice. `examples/refund_agent/graph.py` follows it.
+
 ## The one LangGraph bug you inherit
 
 `get_state().tasks[*].interrupts` over-reports (langgraph

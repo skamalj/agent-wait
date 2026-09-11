@@ -25,7 +25,7 @@ with the guarantees they carried moved explicitly to the caller.
 | Source lines | 3,438 | 1,302 |
 | Durable state the library owns | a single-table store, 5 key prefixes, 3 implementations | none |
 | AWS resources for the example | 2 tables, secret, schedule group, 2 roles, 2 Lambdas, rule, topic, bus, 2 queues | 2 tables, 1 Lambda, topic, 2 queues |
-| Tests | 367 | 141 |
+| Tests | 367 | 142 |
 
 The test count falling is not a regression in rigour; it is 114 conformance tests for a
 store that no longer exists, plus the dispatch decision table for a method that no longer
@@ -97,7 +97,7 @@ is broken. Plus the example's DynamoDB checkpointer.
 ### Results
 
 ```
-141 passed, 4 skipped (the e2e level, opt-in)   in 21s
+142 passed, 4 skipped (the e2e level, opt-in)   in 21s
 ruff check      clean
 ruff format     clean, 57 files
 pyright strict  0 errors
@@ -140,6 +140,14 @@ one question; it does not close it. On SQS FIFO keyed by thread the transport cl
 an HTTP entry point with concurrent handlers it is open, and the host needs its own
 conditional write. This is stated in the README, the migration guide, `handler.py` and
 §19.3 — four places, because it is the one guarantee that genuinely left the building.
+
+**Two interrupting tools in one `ToolNode` are not supported**, and this was found
+while checking whether the implementation answers open LangGraph issues rather than by
+design. On 1.2.11, only one interrupt surfaces per invoke (#6624) and the second carries
+the same id as the first (#6626). `dedupe_key` collides and `pending()` misreads
+`result={}` as finished. Pinned in the spike; documented in the README and
+`docs/architecture.md` as a hard rule: one `interrupt()` per node. The spike's earlier
+parallel tests used two *nodes*, which is why this was not caught before.
 
 **Crashes are simulated at the boundary, not induced.** `driver.py` raises between the
 graph returning and the publisher announcing, which is the real window. It is not a killed
@@ -222,6 +230,13 @@ Decisions taken while building, recorded rather than escalated.
     files: −38 lines. The protocol stays, so duck-typed adapters are still accepted, and
     `test_announce_base.py` proves both paths — including that a subclass which raises is
     contained, and that a bare class which raises is contained too.
+
+14. **The `ToolNode` limitation was found by looking outward, not inward.** Asked whether
+    the implementation could answer questions on the LangGraph tracker, I probed #6626
+    against our pinned version rather than assuming the parallel-node spike covered it. It
+    did not. The probe took twenty lines and found a shape on which two of our three core
+    assumptions fail. It is now a spike test with the observation recorded verbatim, and a
+    stated rule rather than a silent gap.
 
 ## 7. Open questions
 

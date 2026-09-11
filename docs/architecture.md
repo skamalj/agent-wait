@@ -99,6 +99,29 @@ behaviour and the raw over-report, so a LangGraph release that fixes the bug fai
 test rather than passing silently. The message on that assertion says the filter may then
 be removable.
 
+### LangGraph 1.2.x limitation: two interrupting tools in one `ToolNode`
+
+A second finding, recorded by the same spike, that agent-wait does **not** work around:
+
+```text
+first invoke raised      = [('<id-L>', {'which': 'a', 'x': '1'})]
+after resuming it        = [('<id-L>', {'which': 'b', 'x': '2'})]
+same id for both?        = True
+tasks while parked on b  = [('tools', ['<id-L>'], {})]
+```
+
+Two tools that both call `interrupt()`, dispatched by one `ToolNode`: only one surfaces
+per invoke ([#6624](https://github.com/langchain-ai/langgraph/issues/6624)), and the
+second carries the *same id* as the first
+([#6626](https://github.com/langchain-ai/langgraph/issues/6626)). That is a different
+question under an identical `dedupe_key` — a consumer would discard it — and the task
+shows `result={}` while genuinely parked, which `pending()` reads as finished.
+
+There is no filter that fixes this, because the ids are genuinely equal. The rule is
+**one `interrupt()` per node**: give each approval-requiring tool its own node.
+`test_known_limitation_two_interrupting_tools_in_one_toolnode_share_an_id` asserts the
+bug is present so that a LangGraph fix fails the test and this section gets removed.
+
 ### What else was verified rather than assumed
 
 `packages/langgraph-wait/tests/test_spike_langgraph.py`, which writes
