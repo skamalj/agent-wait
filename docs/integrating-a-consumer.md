@@ -63,10 +63,9 @@ whatever you keep. Send `default` unchanged — the asker wrote it.
 
 ## 4. If the questions land in a table
 
-`DynamoDbAnnounce` writes one row per question — `pk = THREAD#…`, `sk = WAIT#…`,
-`status = open`, every envelope field — and never touches it again. Marking rows
-answered, sweeping them, or ignoring them is yours. It exists so an approvals UI can
-`Query` for open questions without building a projection off a topic.
+`DynamoDbAnnounce` writes one row per question and never touches it again; the row shape
+and the index are in [Announcers](announcers.md#dynamodbannounce). Marking rows answered,
+sweeping them, or ignoring them is yours.
 
 ## What the agent guarantees you
 

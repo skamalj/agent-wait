@@ -103,12 +103,6 @@ def test_my_adapter(my_backend):
 `publish()` is the core call; it takes `Question`s and needs no graph, so an adapter test
 needs no LangGraph.
 
-## Without subclassing
-
-`BaseAnnounce` is a convenience. Anything with `name`, `supports(transition)` and
-`announce(envelope, transition)` is accepted — the `AnnounceAdapter` protocol — and
-failures from a bare class are contained the same way.
-
 ## Ideas that are one method away
 
 - **Postgres / MySQL** — `INSERT … ON CONFLICT (dedupe_key) DO UPDATE`

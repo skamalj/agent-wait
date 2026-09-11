@@ -98,8 +98,8 @@ should expect, so that "is this message a new request or an answer?" is one line
 `answer` is whatever the `@hitl` function expects. Nothing is merged into it or added to
 it. For a function without a `decision` parameter, `{"action": "approve"}` runs it,
 `{"action": "approve", "args": {...}}` runs it with those arguments, and anything else is
-returned in its place. For a function with a `decision` parameter, the whole `answer`
-arrives there, whatever it is.
+returned in its place. For a function with a `decision` parameter (or whatever name
+`@hitl(decision=...)` was given), the whole `answer` arrives there, whatever it is.
 
 ---
 
@@ -158,17 +158,3 @@ called it — the node, or the model via the tool result:
 
 The `question_id` is the same one on the envelope, so a graph that keeps its own record
 can match the decision when it arrives.
-
----
-
-## 6. The DynamoDB row
-
-`DynamoDbAnnounce` writes one item per question and never touches it again:
-
-```
-pk = "THREAD#<thread_id>"    sk = "WAIT#<question_id>"    status = "open"
-```
-
-plus every envelope field above, with `expires_at` stored as the string `never` when null
-(so the `by_status` GSI's range key always exists, and a range condition never returns
-those rows as overdue). Whether you close rows, sweep them, or ignore them is yours.

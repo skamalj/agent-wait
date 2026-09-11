@@ -36,7 +36,6 @@ recommended answer message is documented, not received.
 reads it. Nothing in the library checks, dedupes or expires an answer — LangGraph ignores
 a duplicate resume on its own (verified), and the rest is the consumer's.
 
-See [Migrating](https://skamalj.github.io/agent-wait/migrating/).
 
 ## 0.2.1 — 2026-09-11
 
@@ -70,6 +69,4 @@ across re-entry; `tasks[*].interrupts` over-reports after a partial parallel res
 ### Coming from 0.1
 
 0.1 (tagged, never published) owned the whole round trip — tokens, a wait store, leases,
-a scheduler-driven timeout, an inbound `dispatch()`. All of it was removed. See
-[Migrating](https://skamalj.github.io/agent-wait/migrating/) for what
-moved to the caller and why.
+a scheduler-driven timeout, an inbound `dispatch()`. All of it was removed.

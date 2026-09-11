@@ -62,13 +62,16 @@ none is enforced — the consumer acts on them:
 | `allowed_actions` | Which answers are meaningful — the buttons to draw. |
 | `tags` | Routing hints; become SNS message attributes. |
 
-A node that needs the answer itself declares a `decision` parameter and always runs:
+A node that needs the answer itself declares a `decision` parameter and always runs,
+approve or not, with the answer in it:
 
 ```python
 @hitl(FINANCE)
 def review(state, decision=None):
     return {"decision": decision}  # verbatim: {"action": "approve", "note": "ok"}
 ```
+
+The parameter name is yours — `@hitl(FINANCE, decision="verdict")` looks for `verdict`.
 
 **After the run** — one call:
 
@@ -106,6 +109,7 @@ resume for a question the thread has moved past — so there is nothing to check
 
 ```python
 from agent_wait_aws import DynamoDbAnnounce, SnsAnnounce
+
 
 @tool
 @hitl(FINANCE, mode="async", announce=[SnsAnnounce(topic_arn), DynamoDbAnnounce(table)])
@@ -161,19 +165,13 @@ class RedisAnnounce(BaseAnnounce):
         self.client.set(envelope.dedupe_key, envelope.to_json())
 ```
 
-A raise inside `deliver()` becomes a log line; the run completes. Shipped:
+A raise inside `deliver()` becomes a log line; the run completes.
 
-| Adapter | Package | Where the question lands |
-|---|---|---|
-| `WebhookAnnounce` | `agent-wait` | A URL. JSON POST, optional HMAC-SHA256 signature. Stdlib only. |
-| `LogAnnounce` | `agent-wait` | A structured log line. The question never reaches INFO. |
-| `InMemoryAnnounce` | `agent-wait` | A list. For tests. |
-| `SnsAnnounce` | `agent-wait-aws` | A topic; `tags` become message attributes for subscription filters. |
-| `SqsAnnounce` | `agent-wait-aws` | A queue; on FIFO, grouped by thread, deduplicated on the stable key. |
-| `EventBridgeAnnounce` | `agent-wait-aws` | A bus. Notices partial failures behind a 200. |
-| `DynamoDbAnnounce` | `agent-wait-aws` | **A row**, `status=open`, with a GSI an approvals UI can query. Write-only. |
-
-[Writing an announcer](https://skamalj.github.io/agent-wait/writing-an-announcer/).
+Shipped: `WebhookAnnounce` (signed JSON POST, stdlib), `LogAnnounce`, `InMemoryAnnounce`,
+and in `agent-wait-aws`: `SnsAnnounce`, `SqsAnnounce`, `EventBridgeAnnounce`,
+`DynamoDbAnnounce` (the question as a row an approvals UI can query). Each one, its
+constructor and where the question lands: [Announcers](https://skamalj.github.io/agent-wait/announcers/).
+Your own: [Writing an announcer](https://skamalj.github.io/agent-wait/writing-an-announcer/).
 
 ## What the library does *not* do
 

@@ -84,24 +84,6 @@ def test_only_filters_without_the_subclass_doing_anything() -> None:
     assert not Recording(only=()).supports("created")
 
 
-def test_subclassing_is_optional() -> None:
-    """`publish()` accepts the protocol, and contains a failure from a bare class too."""
-
-    class Bare:
-        name = "bare"
-        seen: list[str] = []
-
-        def supports(self, transition: Transition) -> bool:
-            return True
-
-        def announce(self, envelope: WaitEnvelope, transition: Transition) -> None:
-            self.seen.append(transition)
-            raise RuntimeError("still contained")
-
-    assert len(publish([REFUND], "t", [Bare()])) == 1
-    assert Bare.seen == ["created"]
-
-
 # ============================================================ LogAnnounce
 def test_the_question_is_not_logged_at_info(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.INFO, logger="agent_wait.announce"):

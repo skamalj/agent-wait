@@ -40,14 +40,6 @@ for item in result["__interrupt__"]:
     envelopes.append(build_envelope(thread_id, Question(item.id, question, policy, source=source)))
 ```
 
-## Why not `get_state()`
-
-It would work, and it over-reports. After one of two parallel interrupts is resumed,
-`get_state().tasks[*].interrupts` still lists the finished task's id (langgraph #4796 /
-#6792; reproduced on 1.2.11 in `test_spike_langgraph.py`). `result["__interrupt__"]` lists
-only what *this run* raised, which is exactly the set to publish. Reading the result
-instead of the state removed a filter, a caveat, and a whole class of bug.
-
 ## Two interrupt shapes, one envelope
 
 | raised by | `Interrupt.value` | published as |
@@ -125,6 +117,5 @@ already parked. There is no retry: the next redelivery republishes with the same
 ## What is not here, on purpose
 
 No store, no tokens, no leases, no inbound validation, no timers, no `get_state()`.
-Each existed in an earlier version and each put the library on the receive path, where
-every team's own opinions live. The receive path is documented in
+Each would put the library on the receive path, where every team's own opinions live. The receive path is documented in
 `message-formats.md` as a recommended shape; it is not implemented.
