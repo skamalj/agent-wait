@@ -148,7 +148,7 @@ class Ignore:
 
 ### 4.2 `register()` algorithm (normative)
 1. `interrupts = adapter.extract(result, config)`; if empty → finalize: for each wait on the thread in `answered|expired` with `still_pending == False` → CAS to `resumed`, `announce(..., "resumed")`; release lease; return `[]`.
-2. For each interrupt: compute `idempotency_key = sha256(thread_id|interrupt_id|checkpoint_id)`; `store.create()` (idempotent — returns existing on conflict). Compute `expires_at` from policy. Mint token. Build envelope.
+2. For each interrupt: compute `idempotency_key = sha256(thread_id|question_id|checkpoint_id)`; `store.create()` (idempotent — returns existing on conflict). Compute `expires_at` from policy. Mint token. Build envelope.
 3. If the wait was newly created **or** `notified_at` is null → `announce(envelope, "created")` on all adapters; on success set `notified_at`.
 4. Check the parked-answers table for `wait_id` / correlation; if one exists, apply it immediately via the same path as `dispatch()` step 2.6–2.9 and return the resulting `Resume` in `register()`'s **second** return position (see below).
 5. Release the thread lease. Return envelopes.
@@ -181,11 +181,11 @@ Plain `interrupt(value)` without `ask()` must still work: treated as a wait with
 | `wait_id` | ULID string | PK |
 | `thread_id` | str | GSI |
 | `framework` | str | `"langgraph"` |
-| `interrupt_id` | str | LangGraph `Interrupt.id` |
+| `question_id` | str | LangGraph `Interrupt.id` |
 | `checkpoint_id` | str | from `graph.get_state(config).config` |
-| `idempotency_key` | str | unique; `sha256(thread_id|interrupt_id|checkpoint_id)` |
+| `idempotency_key` | str | unique; `sha256(thread_id|question_id|checkpoint_id)` |
 | `question` | JSON | ≤ 200 KB inline; larger → error in v0.1 (blob-by-reference is a v0.2 item) |
-| `binding` | str | `sha256(canonical_json(question)|interrupt_id|checkpoint_id)`; first 16 hex chars go into the token |
+| `binding` | str | `sha256(canonical_json(question)|question_id|checkpoint_id)`; first 16 hex chars go into the token |
 | `policy` | JSON | serialized `WaitPolicy` |
 | `status` | enum | `pending, answered, expired, cancelled, resumed, failed` |
 | `notified_at` | ts? | set after first successful `created` announce |
@@ -276,15 +276,15 @@ class AnnounceAdapter(Protocol):
 ```python
 class FrameworkAdapter(Protocol):
     name: str
-    def extract(self, result: Any, config: Any) -> list[PendingInterrupt]     # (interrupt_id, checkpoint_id, question, policy)
-    def build_resume(self, wait: Wait, resume_value: Any) -> Any             # LangGraph: Command(resume={interrupt_id: resume_value})
-    def still_pending(self, wait: Wait) -> bool                              # LangGraph: interrupt_id in get_state().tasks[*].interrupts
+    def extract(self, result: Any, config: Any) -> list[Question]     # (question_id, checkpoint_id, question, policy)
+    def build_resume(self, wait: Wait, resume_value: Any) -> Any             # LangGraph: Command(resume={question_id: resume_value})
+    def still_pending(self, wait: Wait) -> bool                              # LangGraph: question_id in get_state().tasks[*].interrupts
     def config_for(self, thread_id: str) -> dict
 ```
 
 ### 9.2 LangGraph adapter (`langgraph_wait.LangGraphAdapter(graph)`)
 - Requires LangGraph ≥ 1.2. Verify empirically (a spike test is part of the suite) that `Interrupt.id` is stable across resume-from-checkpoint and that `get_state().tasks[*].interrupts` reliably reflects pending interrupts, including for parallel interrupts and interrupts inside subgraphs (known open bugs #4796/#6792 — document what you find).
-- Resume uses dict-keyed `Command(resume={interrupt_id: value})` so parallel interrupts resume independently.
+- Resume uses dict-keyed `Command(resume={question_id: value})` so parallel interrupts resume independently.
 
 ### 9.3 Hosting for v0.1: Lambda + SQS FIFO (`agent_wait_aws.make_run_handler`)
 ```python
@@ -641,9 +641,9 @@ by a failing test, not by review.
 
 **`expires_at` must be anchored to the checkpoint.** Computed as `now + timeout` at publish
 time it walks forward on every republish, so a thread retried often enough would never
-expire. `PendingInterrupt.asked_at` carries LangGraph's `created_at` for this.
+expire. `Question.asked_at` carries LangGraph's `created_at` for this.
 
-**Deduplication moves from `event_id` to `interrupt_id`.** Republishing is now the only
+**Deduplication moves from `event_id` to `question_id`.** Republishing is now the only
 recovery mechanism, so the key has to survive a republish; `event_id` is minted per publish
 and cannot.
 
@@ -666,3 +666,51 @@ a `Query` against it with no broker in the system at all.
 `v0.1.0` is tagged and its `TEST_REPORT.md` is unchanged. Where the answer-side guarantee is
 load-bearing and the entry point cannot serialise per thread, staying on it is a defensible
 choice rather than a fallback, and the migration guide says so.
+
+---
+
+## 20. v0.3 — publish only (2026-09-11)
+
+Directed by the owner after reviewing the v0.2 host code. Supersedes §19 where they
+conflict.
+
+### 20.1 The finding
+
+v0.2 still wrapped the graph (`WaitPublisher`) and still read framework state
+(`get_state()` behind `pending()` / `republish()`), and still shipped routing helpers
+(`is_answer()`, `resume_command()`). Each was defensible alone; together they put the
+library back on the receive path and made a host learn an object to do one thing. The
+owner's direction: **announce the interrupt, and stop.**
+
+### 20.2 What v0.3 is
+
+- In the graph: `ask(question, policy)`, or `@hitl(policy)` on a tool.
+- After the run: `publish_interrupts(result, thread_id, announce)`. Input is
+  `result["__interrupt__"]` — `Interrupt.id` and `Interrupt.value`, per the LangGraph
+  reference — plus the `thread_id` the host already has. No graph handle, no state read.
+- `@hitl(policy, mode="async", announce=[…])`: the decorator is the publisher; the
+  tool call announces and returns pending; the thread does not park; nothing is called
+  after the run. For single-thread channels where the approver is not on the thread.
+- `HumanInTheLoopMiddleware` batches are understood as one question.
+- `Question(question_id, question, policy, asked_at, source)` replaces `PendingInterrupt`.
+  Envelope field `question_id`. Single transition `wait.created`. Policy gains
+  `answer_ttl`; envelope gains `source`.
+
+### 20.3 The receive side is documentation
+
+The recommended answer message — `{thread_id, question_id, answer, valid_until?}` — and
+the host's one `if` are documented in `docs/message-formats.md`. Nothing is implemented:
+no validation, no dedupe, no expiry, no ledger reads. The `get/close/overdue` briefly
+added to `DynamoDbAnnounce` were removed for exactly this reason; the adapter writes the
+row and never reads it.
+
+Two facts, verified on langgraph 1.2.11 and asserted in tests, make that safe: a
+duplicate `Command(resume=…)` on a thread that has moved past the interrupt runs nothing,
+and a different answer after the first changes nothing. There is therefore no check for
+the host to write.
+
+### 20.4 Why `__interrupt__` and not `get_state()`
+
+`get_state().tasks[*].interrupts` over-reports after a partial parallel resume (#4796 /
+#6792). `result["__interrupt__"]` lists only what the run raised. Reading the result
+removed the filter, the caveat, and the need for a graph handle.

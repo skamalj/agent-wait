@@ -1,185 +1,81 @@
 # Integrating a consumer
 
-You have been handed an SNS topic (or a bus, a queue, or a DynamoDB table) that carries
-wait envelopes, and you need to build the thing a human actually clicks. This is everything
-you need. You do not need to install agent-wait, read its source, or know what LangGraph is.
+You have been handed an SNS topic (or a queue, a webhook, or a DynamoDB table) that
+carries agent-wait envelopes, and you need to build the thing a human clicks. This is
+everything you need. You do not need to install agent-wait or know what LangGraph is.
 
 There are exactly two moves: **listen**, and **reply**.
 
----
-
 ## 1. Listen
 
-Subscribe, and you will receive
-[wait envelopes](message-formats.md#1-the-wait-envelope-outbound).
+Every envelope is a `wait.created` — a question the agent is waiting on. Full schema in
+[Message formats](message-formats.md).
 
 ```python
 def on_envelope(envelope: dict) -> None:
-    key = f"{envelope['type']}:{envelope['interrupt_id']}"
+    key = f"{envelope['type']}:{envelope['question_id']}"
     if already_seen(key):  # at-least-once delivery, and deliberate republishing
         return
     mark_seen(key)
-
-    if envelope["type"] == "wait.created":
-        show_approval(envelope)
-    elif envelope["type"] == "wait.resumed":
-        retract_approval(envelope["interrupt_id"])
+    show_approval(envelope)  # render `question`, offer `allowed_actions`
 ```
 
-**Deduplicate on `type` + `interrupt_id`, not on `event_id`.** `event_id` is fresh on every
-publish, and the agent deliberately republishes the same question when a message is
-redelivered or an operator repairs a lost announce. Deduplicating on `event_id` would show
-the same approval twice; `interrupt_id` is stable for as long as the question stands.
+**Deduplicate on `type` + `question_id`, not on `event_id`.** The same question is
+republished whenever the agent's message is redelivered; `event_id` changes every time,
+`question_id` does not.
 
-Render `question` however suits you — it is opaque to everything in between — and offer
-exactly the buttons in `allowed_actions`. Nothing will refuse a third one, which is
-precisely why you should not draw it.
-
-`wait.resumed` means the graph has moved past the question. It may arrive because somebody
-else answered, or because a timeout sweep sent the default. Either way: close the ticket.
+`source` tells you which tool or node asked. `expires_at` and `default` tell you what
+the asker wants if nobody answers — nothing enforces them; if you want a deadline
+honoured, you honour it (see §3).
 
 ## 2. Reply
 
-The envelope contains a filled-in reply. Copy it, set `answer`, and post it to the agent's
-entry point.
+Copy `reply_with`, set `answer`, send it to the agent's entry point — `reply_to` if the
+envelope has one, otherwise wherever you were told the agent listens.
 
 ```python
-def on_click(envelope: dict, action: str) -> None:
-    body = {**envelope["reply_with"], "answer": {"action": action, "by": current_user()}}
-    send_to(envelope["reply_to"], body)
+def on_click(envelope: dict, decision: dict) -> None:
+    send_to(agent_entry_point, {**envelope["reply_with"], "answer": decision})
 ```
 
-That is the whole protocol. Do not construct the message yourself. The destination is
-`reply_to` if the host chose to publish one — it may differ between environments, so prefer
-it over a hardcoded address — and otherwise it is whatever queue or endpoint you were told
-the agent listens on. `reply_to` is a hint the host can leave out; the library itself
-never reads it.
+`answer` is returned to the graph **verbatim**. If the question came from a `@hitl`
+tool, `{"action": "approve"}` runs it and anything else is shown to the model as the
+reason it did not run. If the question is a middleware batch (`question.actions`), the
+answer is `{"decisions": [...]}` with one entry per action, in order.
 
-### `answer` is returned verbatim
+Sending the same answer twice is harmless — the agent's framework ignores a resume for a
+question it has already moved past. So is a second, different answer: the first stands.
 
-Whatever you put in `answer` is exactly what the graph's `ask()` call returns. Nothing is
-merged into it and no fields are added. If the graph reads `decision["action"]`, send
-`{"action": "approve"}`; if it expects a string, send a string.
+## 3. Deadlines are yours
 
-This is worth stating plainly because it is a trust boundary. The graph will act on what
-you send, and nothing between you and it will second-guess an `action` that is not in
-`allowed_actions`. Validate before you send.
-
-### Answering twice is safe, and answering late is safe
-
-The agent checks whether the thread is still parked on that interrupt before it does
-anything. A double click, a retried HTTP request or a second approver an hour later are all
-dropped. You do not need an idempotency key.
-
-What is **not** guaranteed is two genuinely different answers arriving in the same instant
-— that depends on the agent's transport. Ask whoever runs it; if the entry point is an SQS
-FIFO queue keyed by thread, it is serialised and you are fine.
-
----
-
-## 3. If the questions arrive as a webhook
-
-`WebhookAnnounce` POSTs each envelope to your URL as JSON, with three headers:
-
-```
-X-Agent-Wait-Event:       wait.created | wait.resumed
-X-Agent-Wait-Dedupe-Key:  wait.created:<interrupt_id>
-X-Agent-Wait-Signature:   sha256=<hex>        (if the host configured a secret)
-```
-
-Route on the first, deduplicate on the second, and verify the third before you trust the
-body — it is `HMAC-SHA256(secret, raw body)`, the same shape GitHub and Stripe use:
+If nobody answers, nothing happens; the agent waits. If the asker set `expires_at`, the
+intent is that *you* notice it passing and send `default` as the answer — it is an
+ordinary answer:
 
 ```python
-import hashlib, hmac
-
-
-def verify(secret: bytes, raw_body: bytes, header: str | None) -> bool:
-    if not header:
-        return False
-    expected = "sha256=" + hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, header)
+for envelope in open_questions_past(now):
+    send_to(agent_entry_point, {**envelope["reply_with"], "answer": envelope["default"]})
 ```
 
-(`agent_wait.verify_signature` is the same function, if you happen to have the package.)
+If the questions land in the DynamoDB table, `open_questions_past()` is a query on the
+`by_status` GSI with a range condition on `expires_at`. On a topic or queue, it is
+whatever you keep. Send `default` unchanged — the asker wrote it.
 
-Answer with any 2xx. Anything else is logged on the agent side and **not retried** — the
-question is re-sent the next time the thread is re-invoked, with the same dedupe key. If
-your receiver is down for an hour, expect one POST per redelivery in that hour and dedupe
-accordingly; do not expect a backoff schedule.
+## 4. If the questions land in a table
 
-The signature says the POST came from the agent. It does not say who is allowed to
-answer; that is still your entry point's business.
+`DynamoDbAnnounce` writes one row per question — `pk = THREAD#…`, `sk = WAIT#…`,
+`status = open`, every envelope field — and never touches it again. Marking rows
+answered, sweeping them, or ignoring them is yours. It exists so an approvals UI can
+`Query` for open questions without building a projection off a topic.
 
-## 4. If the questions land in a table instead
+## What the agent guarantees you
 
-`DynamoDbAnnounce` writes each question as a row rather than publishing an event, which is
-often a better fit for an approvals UI: you query for open questions instead of maintaining
-your own projection of a topic.
-
-```
-pk = "THREAD#order-4471"
-sk = "WAIT#a1b2c3d4e5f60718"
-status = "open" | "closed"
-```
-
-Everything the envelope carries is on the row, including `reply_with`. A GSI on `status`
-with `expires_at` as the range key gives you both queries you want:
-
-```python
-# everything a human should see
-table.query(IndexName="by_status", KeyConditionExpression=Key("status").eq("open"))
-
-# everything overdue -- see the next section
-table.query(
-    IndexName="by_status",
-    KeyConditionExpression=Key("status").eq("open") & Key("expires_at").lt(now_iso()),
-)
-```
-
-Rows are overwritten in place when a question is republished, so a repair does not create a
-duplicate. `wait.resumed` sets `status = "closed"` rather than deleting the row, so there
-is still something to show when someone asks why the button disappeared.
-
----
-
-## 5. Somebody has to enforce the timeout
-
-**The agent will not.** `expires_at` and `default` are published as information; nothing
-acts on them. If nobody runs a sweep, an unanswered question waits forever.
-
-It may or may not be your job — agree with whoever runs the agent — but it is somebody's,
-and it is about ten lines:
-
-```python
-def sweep(now_iso: str) -> None:
-    for row in open_questions_past(now_iso):
-        send_to(row["reply_to"], {**row["reply_with"], "answer": row["default"]})
-```
-
-Two details that matter:
-
-* **Send `default` unchanged.** The graph's author wrote it next to the question; it is
-  published verbatim so that nothing in the middle rewrites it.
-* **Re-check that the question is still open** immediately before sending, or you race a
-  human answering right at the deadline. Both answers being dropped is fine; the graph
-  resuming twice is not.
-
-A working sweep is `scenario_b` in `examples/refund_agent/demo_scenarios.py`.
-
----
-
-## 6. What the agent guarantees you
-
-* The question will be published **at least once**. Deduplicate on `type` + `interrupt_id`.
-* `interrupt_id` is stable for as long as the question stands.
-* Your `answer` reaches the graph unmodified.
-* An answer to a question that has already been resolved is dropped, not applied.
-* A `wait.resumed` envelope follows every question the graph moves past.
+- Every question is published at least once, with a stable `question_id`.
+- `answer` reaches the graph unmodified.
+- A duplicate or late answer changes nothing.
 
 ## What it does not
 
-* It does not check your `action` against `allowed_actions`.
-* It does not enforce `expires_at`.
-* It does not authenticate you. Whoever can write to the agent's entry point can answer
-  any open question on it.
+- Check your `answer` against `allowed_actions`.
+- Enforce `expires_at`, `valid_until` or `answer_ttl`.
+- Authenticate you. Whoever can reach the agent's entry point can answer.

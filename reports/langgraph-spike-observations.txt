@@ -25,7 +25,8 @@ behaviour records as identical bytes. Everything else is as observed.
   task 'nb'   interrupts=['<id-G>'] result=None error=None
   get_state().next         = ('nb',)
   -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.
-  -> task.result is the discriminator, and is what pending() reads.
+  -> task.result is the discriminator. agent-wait reads result['__interrupt__'],
+     which does not over-report, and never touches get_state().
 
 == PARALLEL: replaying an already-applied resume ==
   applied <id-H> twice; side-effect log = ['a']
@@ -54,6 +55,6 @@ behaviour records as identical bytes. Everything else is as observed.
   after resuming b         = 0 interrupts left
   -> #6624: only one interrupt surfaces per invoke, not two.
   -> #6626: the second carries the SAME id as the first. A different question,
-     an identical id. dedupe_key would drop it; pending() would read result={}
-     as finished. agent-wait's rule: one interrupt() per node.
+     an identical id, so dedupe_key would drop it. agent-wait's rule: one
+     interrupt() per node, or HumanInTheLoopMiddleware, which batches.
 

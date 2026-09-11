@@ -13,11 +13,9 @@ it. The moment the question has to reach a person on Slack, an approvals dashboa
 ticket queue or another service, you are writing that code yourself — whether your agent
 is a server that runs for a year or a Lambda that is gone in seconds.
 
-agent-wait is that code. It takes the pause and puts it somewhere people can see it — a
-topic, a queue, a webhook, a database row — with everything needed to answer it in one
-envelope, and reduces "is this message a new request or an answer?" to a one-line check.
-
-It does not receive the answer for you. That part is yours, and it is about a dozen lines.
+agent-wait is that code. It takes the interrupt and puts it somewhere people can see it —
+a topic, a queue, a webhook, a database row — with everything needed to answer it in one
+envelope, and documents the shape of the answer so the return leg is one `if`.
 
 ```bash
 pip install agent-wait langgraph-wait          # core + LangGraph
@@ -34,60 +32,82 @@ from langgraph_wait import ask
 
 
 def review(state):
-    if state["amount"] <= 5_000:
-        return {"decision": {"action": "approve", "by": "policy:auto"}}
-
     decision = ask(
         {"kind": "refund_approval", "order_id": state["order_id"], "amount": state["amount"]},
         policy=WaitPolicy(
             timeout="P3D",
-            default={"action": "reject", "reason": "no response in 3 days"},
+            default={"action": "reject"},
             allowed_actions=("approve", "reject"),
             tags={"approver_group": "finance"},
         ),
     )
-    return {"decision": decision}
+    return {"decision": decision}  # exactly what the approver sent
 ```
 
-`ask()` is a thin wrapper over `interrupt()`. The node pauses exactly as LangGraph pauses;
-what `ask()` adds is the policy, which rides along and comes back out in the envelope. A
-plain `interrupt(value)` works too, with default policy — a graph that already interrupts
-gets published with no edit at all.
+`ask()` is a thin wrapper over `interrupt()`; the policy rides along inside the
+interrupt value. A plain `interrupt(value)` works too, with the default policy.
 
-**In the host** — wire it once:
+**After the run** — one call:
 
 ```python
-from agent_wait import WaitPublisher
 from agent_wait_aws import SnsAnnounce
-from langgraph_wait import LangGraphAdapter
+from langgraph_wait import publish_interrupts
 
-agent = WaitPublisher(LangGraphAdapter(graph), announce=[SnsAnnounce(topic_arn)])
+result = graph.invoke(value, {"configurable": {"thread_id": thread_id}})
+publish_interrupts(result, thread_id, announce=[SnsAnnounce(topic_arn)])
 ```
 
-**Then route each message.** Starts and answers arrive at the same place; `interrupt_id`
-tells them apart:
+It reads `result["__interrupt__"]` — `Interrupt.id` and `Interrupt.value`, nothing else —
+and hands one envelope per question to the announcers. No graph handle, no `get_state()`,
+no checkpointer. If nothing interrupted, it does nothing.
+
+**When the answer comes back** — the one `if` you write:
 
 ```python
-from langgraph_wait import is_answer, resume_command
+from langgraph.types import Command
 
+if "question_id" in message:  # an answer
+    value = Command(resume={message["question_id"]: message["answer"]})
+else:  # a start
+    value = message["input"]
 
-def route(message):
-    thread_id = message["thread_id"]
-    if is_answer(message):
-        if not is_still_open(thread_id, message["interrupt_id"]):
-            return  # somebody already answered
-        return agent.invoke(resume_command(message), thread_id)
-    if agent.pending(thread_id):
-        return agent.republish(thread_id)  # a redelivery; don't re-ask
-    return agent.invoke(message["input"], thread_id)
-
-
-def is_still_open(thread_id, interrupt_id):
-    return any(p.interrupt_id == interrupt_id for p in agent.pending(thread_id))
+result = graph.invoke(value, {"configurable": {"thread_id": message["thread_id"]}})
+publish_interrupts(result, message["thread_id"], announce)
 ```
 
-That is the complete integration. [`examples/refund_agent/`](https://github.com/skamalj/agent-wait/tree/main/examples/refund_agent)
-is it, deployed to Lambda behind SQS.
+That is the complete integration. A duplicate answer runs nothing — LangGraph ignores a
+resume for a question the thread has moved past — so there is nothing to check.
+
+## Or tag the tool
+
+```python
+from langgraph_wait import hitl
+
+
+@tool
+@hitl(WaitPolicy(timeout="P1D", default={"action": "reject"}, tags={"approver_group": "finance"}))
+def issue_refund(order_id: str, amount: int) -> str: ...
+```
+
+`@hitl` calls `ask()` with `{tool, args}` before the tool runs. `{"action": "approve"}`
+runs it (optionally with edited `args`); anything else is returned to the model as the
+tool's result. It also registers the policy by tool name, so questions raised by
+LangChain's `HumanInTheLoopMiddleware` — which batches several tool calls into one
+interrupt — are published with it.
+
+**Async mode — the thread does not park:**
+
+```python
+@tool
+@hitl(FINANCE, mode="async", announce=[SnsAnnounce(topic_arn), DynamoDbAnnounce(table)])
+def issue_refund(order_id: str, amount: int) -> str: ...
+```
+
+The decorator *is* the publisher: the tool call announces the question and returns
+`{"status": "pending_approval", "question_id": ...}` without running. The graph carries
+on; nothing is parked; nothing to call after the run. The decision arrives later as a new
+message and your graph acts on it. This is the mode for a single-thread channel like
+WhatsApp, where the approver is not the person on the thread.
 
 ## What goes out
 
@@ -95,29 +115,25 @@ is it, deployed to Lambda behind SQS.
 {
   "type": "wait.created",
   "thread_id": "order-4471",
-  "interrupt_id": "a1b2c3d4e5f60718",
+  "question_id": "a1b2c3d4e5f60718",
   "question": { "kind": "refund_approval", "amount": 41000 },
   "allowed_actions": ["approve", "reject"],
-  "expires_at": "2026-09-12T09:00:00Z",
-  "default": { "action": "reject", "reason": "no response in 3 days" },
-  "reply_with": { "thread_id": "order-4471", "interrupt_id": "a1b2c3d4e5f60718", "answer": null }
+  "expires_at": "2026-09-14T09:00:00Z",
+  "default": { "action": "reject" },
+  "source": { "tool": "issue_refund" },
+  "reply_with": { "thread_id": "order-4471", "question_id": "a1b2c3d4e5f60718", "answer": null }
 }
 ```
 
-`reply_with` is a filled-in stub: the consumer copies it, sets `answer`, and posts it to
-wherever your agent listens. Whatever goes in `answer` is what the `ask()` call returns —
-verbatim, with nothing merged into it.
+`reply_with` is a filled-in stub: copy it, set `answer`, send it back. Whatever goes in
+`answer` is what `ask()` returns — verbatim.
 
-A second envelope, `wait.resumed`, goes out when the graph moves past the question, so a
-UI knows to retract the button.
-
-Full schema, including how to deduplicate:
+Full schema, the recommended answer shape, and how to deduplicate:
 [Message formats](https://skamalj.github.io/agent-wait/message-formats/).
 
 ## Announcers
 
-An announcer is the only thing you are expected to implement. Subclass `BaseAnnounce`
-and write one method:
+Subclass `BaseAnnounce`, write one method:
 
 ```python
 from agent_wait import BaseAnnounce
@@ -134,75 +150,45 @@ class RedisAnnounce(BaseAnnounce):
         self.client.set(envelope.dedupe_key, envelope.to_json())
 ```
 
-The contract — **an announcer must never raise into the run** — is enforced by the base
-class: an exception from `deliver()` becomes a log line, and the graph that just parked
-stays parked.
-
-Because nothing reads state back through this library, "announce" doesn't have to mean
-"publish an event". It means *put the question where whoever answers it will find it*:
+A raise inside `deliver()` becomes a log line; the run completes. Shipped:
 
 | Adapter | Package | Where the question lands |
 |---|---|---|
-| `WebhookAnnounce` | `agent-wait` | A URL. JSON POST, optional HMAC-SHA256 signature in the GitHub/Stripe shape. Stdlib only. |
+| `WebhookAnnounce` | `agent-wait` | A URL. JSON POST, optional HMAC-SHA256 signature. Stdlib only. |
 | `LogAnnounce` | `agent-wait` | A structured log line. The question never reaches INFO. |
 | `InMemoryAnnounce` | `agent-wait` | A list. For tests. |
-| `SnsAnnounce` | `agent-wait-aws` | A topic; policy `tags` become message attributes for subscription filters. |
-| `SqsAnnounce` | `agent-wait-aws` | A queue; on FIFO, grouped by thread and deduplicated on the stable key. |
-| `EventBridgeAnnounce` | `agent-wait-aws` | A bus, with the transition as detail-type. Notices partial failures behind a 200. |
-| `DynamoDbAnnounce` | `agent-wait-aws` | **A row.** `open` on `created`, `closed` on `resumed`. A GSI on `status` gives an approvals UI its query with no broker anywhere. |
+| `SnsAnnounce` | `agent-wait-aws` | A topic; `tags` become message attributes for subscription filters. |
+| `SqsAnnounce` | `agent-wait-aws` | A queue; on FIFO, grouped by thread, deduplicated on the stable key. |
+| `EventBridgeAnnounce` | `agent-wait-aws` | A bus. Notices partial failures behind a 200. |
+| `DynamoDbAnnounce` | `agent-wait-aws` | **A row**, `status=open`, with a GSI an approvals UI can query. Write-only. |
 
-Pass as many as you like; failures are contained per adapter. The full guide — what
-`deliver()` receives, why `dedupe_key` is the one field to get right, patterns from the
-shipped adapters, and how to test yours:
 [Writing an announcer](https://skamalj.github.io/agent-wait/writing-an-announcer/).
 
 ## What the library does *not* do
 
-Deliberately — each of these is where teams' own opinions live:
+- **Receive answers.** No endpoint, no validation, no ledger reads. The `if` above is yours.
+- **Enforce anything.** `expires_at`, `default`, `answer_ttl`, `allowed_actions` are
+  published so the consumer has the asker's intent. Acting on them is the consumer's.
+- **Store anything.** LangGraph's checkpoint is the only state in interrupt mode; in
+  async mode there is none unless you keep one.
 
-- **Receive answers.** No inbound endpoint, no validation, no tokens. The router above is yours.
-- **Enforce the timeout.** `expires_at` and `default` are published; a sweep of yours
-  sends the default when the deadline passes. There is a
-  [working one](https://github.com/skamalj/agent-wait/blob/main/examples/refund_agent/demo_scenarios.py)
-  in the example.
-- **Decide a race.** `pending()` rejects an answer the graph has already moved past.
-  Two *different* answers in the same instant are your transport's problem — SQS FIFO
-  keyed by thread solves it; an HTTP endpoint with concurrent handlers needs a
-  conditional write.
-- **Authenticate.** Whoever can write to your entry point can answer.
-- **Store anything.** LangGraph's checkpoint is the only state.
+## One LangGraph 1.2.x behaviour to know
 
-## Two LangGraph 1.2.x behaviours you should know about
-
-Both verified against 1.2.11, both pinned by tests that fail if LangGraph changes them.
-
-**`get_state().tasks[*].interrupts` over-reports** ([#4796](https://github.com/langchain-ai/langgraph/issues/4796),
-[#6792](https://github.com/langchain-ai/langgraph/issues/6792)). Resume one of two parallel
-interrupts and the finished task still lists its id. `pending()` filters on `task.result`,
-which is `None` only while genuinely parked.
-
-**Two interrupting tools in one `ToolNode` get the same id** ([#6626](https://github.com/langchain-ai/langgraph/issues/6626),
-[#6624](https://github.com/langchain-ai/langgraph/issues/6624)). A different question under
-an identical id defeats deduplication, and there is no filter for it. The rule is **one
-`interrupt()` per node** — give each approval-requiring tool its own node, which is also
-the fix for a node re-running its side effects on resume.
-
-Details: [Architecture](https://skamalj.github.io/agent-wait/architecture/).
+Two tools that each call `interrupt()`, dispatched by one `ToolNode`, get the **same
+interrupt id** ([#6626](https://github.com/langchain-ai/langgraph/issues/6626)), and only
+one surfaces per run ([#6624](https://github.com/langchain-ai/langgraph/issues/6624)).
+A different question under an identical id defeats deduplication. Use one interrupting
+tool per node, or `HumanInTheLoopMiddleware`, which batches them into one interrupt.
+Pinned by a test that fails if LangGraph changes it.
 
 ## Layout
 
 ```
-packages/agent-wait        core. No LangGraph, no AWS, no dependencies. pyright strict.
-packages/langgraph-wait    ask(), the adapter, resume_command(). The only LangGraph import.
-packages/agent-wait-aws    four announce adapters, and a CDK stack.
-examples/refund_agent      a graph, a router, and four scenarios against real AWS.
+packages/agent-wait        core: Question, WaitPolicy, the envelope, publish(), announcers. No deps.
+packages/langgraph-wait    ask(), @hitl, publish_interrupts(). The only LangGraph import.
+packages/agent-wait-aws    four announce adapters, and a CDK stack for the example.
+examples/refund_agent      a graph and a host, deployed to Lambda behind SQS.
 docs/                      message contract, architecture, announcer guide, consumer guide.
-```
-
-```bash
-uv sync
-uv run pytest
-uv run ruff check . && uv run pyright
 ```
 
 MIT. Issues and PRs at [github.com/skamalj/agent-wait](https://github.com/skamalj/agent-wait).

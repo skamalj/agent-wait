@@ -8,21 +8,19 @@ pip install langgraph-wait          # pulls in agent-wait
 ```
 
 ```python
-from langgraph_wait import ask, LangGraphAdapter, is_answer, resume_command
+from langgraph_wait import ask, hitl, publish_interrupts
 ```
 
-* **`ask(question, policy)`** — a thin wrapper over `interrupt()`. The node pauses exactly
-  as LangGraph pauses; the policy rides along inside the interrupt value and comes back
-  out in the published envelope. A plain `interrupt(value)` also works, with the default
-  policy.
-* **`LangGraphAdapter(graph)`** — three methods. `pending()` reads what a thread is parked
-  on and filters LangGraph's `tasks[*].interrupts` over-report on `task.result`.
-* **`is_answer(message)`** / **`resume_command(message)`** — pure functions for the host's
-  router. `interrupt_id` present means resume; the `Command` is keyed by interrupt id so
-  parallel interrupts resume independently.
+* **`ask(question, policy)`** — a thin wrapper over `interrupt()`; the policy rides along
+  inside the interrupt value. A plain `interrupt(value)` also works, with the default policy.
+* **`@hitl(policy)`** — on a tool function, under `@tool`. Calls `ask()` with `{tool, args}`
+  before the tool runs. `mode="async"` makes the decorator the publisher: it announces and
+  returns pending without parking the thread.
+* **`publish_interrupts(result, thread_id, announce)`** — after `graph.invoke()`. Reads
+  `result["__interrupt__"]` and hands one envelope per question to the announcers.
+  Understands `ask()`, bare `interrupt()`, and `HumanInTheLoopMiddleware` batches.
 
 Requires `langgraph >= 1.2`. One `interrupt()` per node — two interrupting tools in one
-`ToolNode` share an id on 1.2.x (langgraph #6626), and this package documents rather
-than hides that.
+`ToolNode` share an id on 1.2.x (langgraph #6626); use the middleware, which batches.
 
 Full documentation: [skamalj.github.io/agent-wait](https://skamalj.github.io/agent-wait/).

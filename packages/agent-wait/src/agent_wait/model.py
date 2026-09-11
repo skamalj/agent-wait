@@ -18,15 +18,11 @@ from typing import Any, Literal, Protocol
 from .errors import QuestionTooLarge
 from .policy import WaitPolicy
 
-Transition = Literal["created", "resumed"]
-"""The two things that can be said about a wait.
+Transition = Literal["created"]
+"""The one thing said about a wait: the graph is parked on this question.
 
-`created` -- the graph is parked on this question; here is everything needed to answer
-it. `resumed` -- the graph has moved past it; close the ticket, retract the button.
-
-There is no `answered`, `expired` or `cancelled`. Those would describe the library's
-opinion about an answer, and no answer ever reaches the library. Only the graph's own
-state is reported, and the graph knows exactly two things: parked, or not.
+Announce adapters receive it as a second argument so an adapter can be written once for
+any future transition without changing its signature; today only `created` is emitted.
 """
 
 # 256 KB is the smallest of the caps on the way out (SNS, SQS and EventBridge all sit
@@ -113,21 +109,24 @@ class EntryPoint:
 
 
 @dataclass(frozen=True)
-class PendingInterrupt:
-    """One question a thread is parked on. What a `FrameworkAdapter` hands back."""
+class Question:
+    """One question for a human. What `publish()` takes.
 
-    interrupt_id: str
+    `question_id` is whatever the answer must carry back. In interrupt mode it is
+    LangGraph's `Interrupt.id`; in async mode it is an id you minted -- derive it from the
+    inputs (`sha256(thread | tool | args)`) so the same trigger produces the same question
+    and the consumer sees one, not two.
+    """
+
+    question_id: str
     question: Any
     policy: WaitPolicy
     asked_at: float | None = None
-    """When the framework checkpointed this interrupt, if it can say.
-
-    This is what `expires_at` is measured from. It has to come from the checkpoint
-    rather than from the clock at publish time, because the same question is republished
-    whenever a start message is redelivered -- and a deadline recomputed as `now +
-    timeout` on each republish would walk forward forever, which is precisely the
-    failure a timeout exists to prevent.
-    """
+    """POSIX timestamp of when the question was asked, if known. `expires_at` is measured
+    from it when set and from publish time otherwise."""
+    source: Mapping[str, Any] | None = None
+    """Where it came from -- `{"tool": "issue_refund"}`, `{"node": "review"}`. The first
+    thing an approver reads, so worth filling in when you can."""
 
 
 @dataclass(frozen=True)
@@ -137,13 +136,15 @@ class WaitEnvelope:
     type: str
     event_id: str
     thread_id: str
-    interrupt_id: str
+    question_id: str
     question: Any
     allowed_actions: tuple[str, ...]
     expires_at: str | None
     reply_with: Mapping[str, Any]
     reply_to: Mapping[str, str] | None = None
     default: Any = None
+    answer_ttl: str | int | None = None
+    source: Mapping[str, Any] | None = None
     correlation: Mapping[str, str] | None = None
     tags: Mapping[str, str] = field(default_factory=_no_str_map)
 
@@ -153,22 +154,24 @@ class WaitEnvelope:
 
         Not `event_id`: that is fresh per publish, so a redelivered start message
         republishing the same question would look like a second question. LangGraph
-        guarantees `interrupt_id` is stable across re-entry and resume-from-checkpoint
+        guarantees `question_id` is stable across re-entry and resume-from-checkpoint
         (verified in `test_spike_langgraph.py`), which makes this key stable for exactly
         as long as the question is.
         """
-        return f"{self.type}:{self.interrupt_id}"
+        return f"{self.type}:{self.question_id}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "type": self.type,
             "event_id": self.event_id,
             "thread_id": self.thread_id,
-            "interrupt_id": self.interrupt_id,
+            "question_id": self.question_id,
             "question": self.question,
             "allowed_actions": list(self.allowed_actions),
             "expires_at": self.expires_at,
             "default": self.default,
+            "answer_ttl": self.answer_ttl,
+            "source": dict(self.source) if self.source else None,
             "reply_to": dict(self.reply_to) if self.reply_to else None,
             "reply_with": dict(self.reply_with),
             "correlation": dict(self.correlation) if self.correlation else None,

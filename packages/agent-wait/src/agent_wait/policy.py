@@ -12,6 +12,8 @@ needs:
   a UI countdown can act on it without re-parsing a duration;
 * `allowed_actions` tells a UI which buttons to draw;
 * `default` tells whoever enforces the timeout what to send when it fires;
+* `answer_ttl` tells the host how long an answer stays usable after it is given -- an
+  approval that sat on a queue over a weekend should not land on Monday;
 * `tags` become SNS message attributes, so filter policies can route on them.
 
 The policy rides inside the interrupt value under the `__wait__` key, because that is the
@@ -84,6 +86,7 @@ class WaitPolicy:
 
     timeout: str | int | None = None
     default: Any = None
+    answer_ttl: str | int | None = None
     allowed_actions: tuple[str, ...] = ("resume",)
     tags: Mapping[str, str] = field(default_factory=_no_tags)
     correlation: Mapping[str, str] | None = None
@@ -92,6 +95,7 @@ class WaitPolicy:
         # Fail here, in the graph, at the line that got it wrong -- not three days later
         # in whatever consumer tried to read `expires_at`.
         parse_duration(self.timeout)
+        parse_duration(self.answer_ttl)
         if not self.allowed_actions:
             raise PolicyError("allowed_actions must not be empty")
 
@@ -99,10 +103,15 @@ class WaitPolicy:
     def timeout_seconds(self) -> float | None:
         return parse_duration(self.timeout)
 
+    @property
+    def answer_ttl_seconds(self) -> float | None:
+        return parse_duration(self.answer_ttl)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "timeout": self.timeout,
             "default": self.default,
+            "answer_ttl": self.answer_ttl,
             "allowed_actions": list(self.allowed_actions),
             "tags": dict(self.tags),
             "correlation": dict(self.correlation) if self.correlation is not None else None,
@@ -116,6 +125,7 @@ class WaitPolicy:
         return cls(
             timeout=data.get("timeout"),
             default=data.get("default"),
+            answer_ttl=data.get("answer_ttl"),
             allowed_actions=tuple(data.get("allowed_actions") or ("resume",)),
             tags=dict(data.get("tags") or {}),
             correlation=dict(correlation) if correlation else None,

@@ -89,7 +89,7 @@ class BaseAnnounce(ABC):
         except Exception:
             # A backend being unreachable must not fail a run that has already parked.
             self._log.exception(
-                "%s failed for interrupt %s (%s)", type(self).__name__, envelope.interrupt_id, transition
+                "%s failed for interrupt %s (%s)", type(self).__name__, envelope.question_id, transition
             )
 
     @abstractmethod

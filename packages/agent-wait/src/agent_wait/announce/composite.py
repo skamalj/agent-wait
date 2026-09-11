@@ -43,5 +43,5 @@ class CompositeAnnounce:
                     "announce adapter %s raised on %s for interrupt %s",
                     name,
                     transition,
-                    envelope.interrupt_id,
+                    envelope.question_id,
                 )

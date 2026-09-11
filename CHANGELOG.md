@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 — 2026-09-11
+
+**Publish only.** The `WaitPublisher` wrapper, `pending()`, `republish()`, `is_answer()`
+and `resume_command()` are gone. The library is `ask()` / `@hitl` in the graph and
+`publish_interrupts(result, thread_id, announce)` after the run — it reads
+`result["__interrupt__"]` and nothing else. No graph handle, no `get_state()`.
+
+**`@hitl`.** A tool decorator. `mode="interrupt"` calls `ask()` before the tool runs;
+`mode="async"` publishes from inside the tool through the decorator's own announcers and
+returns pending without parking the thread. Both register the policy by tool name.
+
+**`HumanInTheLoopMiddleware`** (langchain ≥ 1.0) batches are understood: one envelope
+for the batch, the answer is `{"decisions": [...]}`.
+
+**Schema.** `PendingInterrupt` → `Question`; `interrupt_id` → `question_id`; single
+transition `wait.created`; policy gains `answer_ttl`; envelope gains `source`. The
+recommended answer message is documented, not received.
+
+**Removed from the receive path entirely.** `DynamoDbAnnounce` writes the row and never
+reads it. Nothing in the library checks, dedupes or expires an answer — LangGraph ignores
+a duplicate resume on its own (verified), and the rest is the consumer's.
+
+See [Migrating](https://skamalj.github.io/agent-wait/migrating/).
+
 ## 0.2.1 — 2026-09-11
 
 Documentation only. The README and package description now say what the library is for
@@ -33,5 +57,5 @@ across re-entry; `tasks[*].interrupts` over-reports after a partial parallel res
 
 0.1 (tagged, never published) owned the whole round trip — tokens, a wait store, leases,
 a scheduler-driven timeout, an inbound `dispatch()`. All of it was removed. See
-[Migrating from 0.1](https://skamalj.github.io/agent-wait/migrating-from-0.1/) for what
+[Migrating](https://skamalj.github.io/agent-wait/migrating/) for what
 moved to the caller and why.

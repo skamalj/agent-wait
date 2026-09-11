@@ -1,28 +1,28 @@
 """`DynamoDbAnnounce` -- the question *is* the row.
 
-Here to make a point: since nothing reads state back through this library, an
-"announce adapter" does not have to be a message broker. It is
-just somewhere the question lands where whoever answers it will find it. A table is a
-perfectly good somewhere -- and for an approval queue it is a better one, because a UI
-can `Query` it for "everything still open" without anybody having to build a projection
-off an event stream first.
+An announce adapter does not have to be a message broker. It is somewhere the question
+lands where whoever answers it will find it, and for an approvals workflow a table is a
+good somewhere: a UI queries it for "everything still open" without building a
+projection off an event stream.
 
     announce=[DynamoDbAnnounce("approvals")]
 
-    pk = "THREAD#order-4471"   sk = "WAIT#<interrupt_id>"
-    status = "open" | "closed"
+    pk = "THREAD#order-4471"   sk = "WAIT#<question_id>"   status = "open"
 
-`created` writes the row; `resumed` marks it closed rather than deleting it, so the row
-is still there when someone asks why the button stopped working. Both are idempotent:
-the same interrupt republished after a crash overwrites its own row with identical
-content, which is the whole reason `dedupe_key` is stable.
+That is the adapter's whole job: write the row. Publishing the same question again
+overwrites its own row -- `dedupe_key` is stable, so a redelivery is one row, not two.
 
-A GSI on `status` gives you "every open approval", which is the query an approvals UI
-actually wants. The CDK stack in this package creates it.
+Nothing here reads the row back, closes it, or sweeps it. Whether you treat this table
+as a ledger, how you mark a question answered, and what you do when `expires_at` passes
+are yours; `docs/message-formats.md` says what the row contains and what a host is
+expected to check. The GSI `by_status` (`status`, `expires_at`) exists so those queries
+are cheap. `expires_at` is written as the string `never` when the policy has no timeout,
+so a range condition on it never returns those rows as overdue.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import boto3
@@ -48,51 +48,23 @@ class DynamoDbAnnounce(BaseAnnounce):
         self._ttl_seconds = ttl_seconds
 
     def deliver(self, envelope: WaitEnvelope, transition: Transition) -> None:
-        if transition == "resumed":
-            self._close(envelope)
-        else:
-            self._open(envelope)
-
-    def _open(self, envelope: WaitEnvelope) -> None:
         item: dict[str, Any] = {
             "pk": f"THREAD#{envelope.thread_id}",
-            "sk": f"WAIT#{envelope.interrupt_id}",
+            "sk": f"WAIT#{envelope.question_id}",
             "status": "open",
             "thread_id": envelope.thread_id,
-            "interrupt_id": envelope.interrupt_id,
+            "question_id": envelope.question_id,
             "question": envelope.question,
             "allowed_actions": list(envelope.allowed_actions),
-            "expires_at": envelope.expires_at,
+            "expires_at": envelope.expires_at or "never",  # the GSI range key must exist
             "reply_with": dict(envelope.reply_with),
             "tags": dict(envelope.tags),
             "event_id": envelope.event_id,
         }
-        if envelope.default is not None:
-            item["default"] = envelope.default
-        if envelope.reply_to:
-            item["reply_to"] = dict(envelope.reply_to)
+        for key in ("default", "answer_ttl", "source", "reply_to"):
+            value = getattr(envelope, key)
+            if value:
+                item[key] = dict(value) if isinstance(value, dict) else value
         if self._ttl_seconds:
-            item["ttl"] = int(_now()) + self._ttl_seconds
+            item["ttl"] = int(time.time()) + self._ttl_seconds
         self._table.put_item(Item=item)
-
-    def _close(self, envelope: WaitEnvelope) -> None:
-        """Mark closed, and only if the row is there.
-
-        The condition matters: a `resumed` for an interrupt this table never saw
-        (announced by a different adapter, or written before this adapter was added)
-        should leave nothing behind. Creating a closed row for a question nobody was
-        ever asked would put a phantom in the approvals UI's history.
-        """
-        self._table.update_item(
-            Key={"pk": f"THREAD#{envelope.thread_id}", "sk": f"WAIT#{envelope.interrupt_id}"},
-            UpdateExpression="SET #s = :closed",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":closed": "closed"},
-            ConditionExpression="attribute_exists(pk)",
-        )
-
-
-def _now() -> float:
-    import time
-
-    return time.time()

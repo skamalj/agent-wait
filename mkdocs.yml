@@ -49,5 +49,5 @@ nav:
   - Writing an announcer: writing-an-announcer.md
   - Architecture: architecture.md
   - Integrating a consumer: integrating-a-consumer.md
-  - Migrating from 0.1: migrating-from-0.1.md
+  - Migrating: migrating.md
   - Changelog: changelog.md

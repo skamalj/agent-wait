@@ -1,10 +1,9 @@
 """The refund agent end to end: a real graph, a real checkpointer, real interrupts.
 
-Only the cloud is faked. What these tests are really checking is the v0.2 bargain -- that
-the library publishes correctly, and that the guarantees it handed back to the caller can
-in fact be met by a caller doing something reasonable. Where a v0.1 test asserted "the
-library refused this", the v0.2 test asserts "the router refused this, using `pending()`",
-and says so.
+Only the cloud is faked. `Host` below is what a host writes: the one `if` that tells an
+answer from a start, the `invoke()`, and `publish_interrupts()` after it. Nothing is
+checked on the way in -- LangGraph is asked to resume, and what it does with a duplicate
+is asserted here as a fact rather than guarded against.
 
 `PAYMENTS_CALLED` is the point of all of it.
 """
@@ -16,14 +15,13 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from driver import Died, LocalHost
+from agent_wait import InMemoryAnnounce, WaitEnvelope
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+from langgraph_wait import publish_interrupts
 from refund_agent.graph import PAYMENTS_CALLED, build_graph, reset_side_effects
 
-START_MESSAGE = {
-    "thread_id": "order-4471",
-    "input": {"order_id": "order-4471", "amount": 41000},
-}
+START_MESSAGE = {"thread_id": "order-4471", "input": {"order_id": "order-4471", "amount": 41000}}
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +31,39 @@ def clean_side_effects() -> Iterator[None]:
     reset_side_effects()
 
 
+class Host:
+    """Everything the caller owns. Deliberately short."""
+
+    def __init__(self, graph: Any) -> None:
+        self.graph = graph
+        self.inbox = InMemoryAnnounce()
+
+    def config(self, thread_id: str) -> dict[str, Any]:
+        return {"configurable": {"thread_id": thread_id}}
+
+    def deliver(self, message: dict[str, Any]) -> Any:
+        """The router. `question_id` present means answer; that is the whole rule."""
+        thread_id = message["thread_id"]
+        if "question_id" in message:
+            value: Any = Command(resume={message["question_id"]: message["answer"]})
+        else:
+            value = message["input"]
+        result = self.graph.invoke(value, self.config(thread_id))
+        publish_interrupts(result, thread_id, [self.inbox])
+        return result
+
+    # -- consumer-side helpers ---------------------------------------------------
+    def latest(self) -> WaitEnvelope:
+        return self.inbox.events[-1][1]
+
+    def reply(self, envelope: WaitEnvelope, answer: Any) -> dict[str, Any]:
+        """Exactly what a consumer does: copy `reply_with`, fill in `answer`."""
+        return {**dict(envelope.reply_with), "answer": answer}
+
+    def state(self, thread_id: str) -> Any:
+        return self.graph.get_state(self.config(thread_id)).values
+
+
 def sqlite_saver() -> Any:
     from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -40,215 +71,99 @@ def sqlite_saver() -> Any:
 
 
 @pytest.fixture(params=["memory", "sqlite"])
-def host(request: pytest.FixtureRequest) -> LocalHost:
-    """Twice: once entirely in memory, once against a real SQLite checkpointer, which is
-    the closest local analogue of a deployed checkpointer."""
+def host(request: pytest.FixtureRequest) -> Host:
     saver = InMemorySaver() if request.param == "memory" else sqlite_saver()
-    return LocalHost(build_graph(saver))
+    return Host(build_graph(saver))
 
 
 # ============================================================== the happy path
-def test_a_small_refund_never_asks_anyone(host: LocalHost) -> None:
-    """The publisher costs nothing when the graph does not pause."""
+def test_a_small_refund_never_asks_anyone(host: Host) -> None:
     host.deliver({"thread_id": "order-1", "input": {"order_id": "order-1", "amount": 900}})
 
-    assert host.announce.events == []
+    assert host.inbox.events == []
     assert PAYMENTS_CALLED == ["order-1"]
 
 
-def test_a_large_refund_parks_and_publishes(host: LocalHost) -> None:
+def test_a_large_refund_parks_and_publishes(host: Host) -> None:
     host.deliver(START_MESSAGE)
 
-    (envelope,) = host.open_envelopes()
+    envelope = host.latest()
     assert envelope.type == "wait.created"
     assert envelope.question["kind"] == "refund_approval"
     assert envelope.question["amount"] == 41000
     assert envelope.allowed_actions == ("approve", "reject")
     assert envelope.tags == {"approver_group": "finance"}
     assert envelope.expires_at is not None
+    assert envelope.reply_with["question_id"] == envelope.question_id
     assert PAYMENTS_CALLED == [], "nothing irreversible before a human answers"
 
 
-def test_the_envelope_carries_everything_needed_to_answer_it(host: LocalHost) -> None:
-    """A consumer should never need a second lookup, and never need to construct the
-    reply itself."""
+def test_approval_resumes_the_graph_and_refunds_once(host: Host) -> None:
     host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
 
-    assert envelope.reply_to == {"kind": "sqs", "url": "https://sqs.example/agent-inbox"}
-    assert envelope.reply_with["thread_id"] == "order-4471"
-    assert envelope.reply_with["interrupt_id"] == envelope.interrupt_id
-    assert "answer" in envelope.reply_with
-
-
-def test_approval_resumes_the_graph_and_refunds_once(host: LocalHost) -> None:
-    host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
-
-    host.deliver(host.reply(envelope, {"action": "approve", "note": "within budget"}))
+    host.deliver(host.reply(host.latest(), {"action": "approve", "note": "within budget"}))
 
     assert PAYMENTS_CALLED == ["order-4471"]
-    assert host.agent.pending("order-4471") == []
-    assert host.announce.transitions() == ["created", "resumed"], "the ticket was closed"
+    assert host.state("order-4471")["decision"] == {"action": "approve", "note": "within budget"}, "verbatim"
 
 
-def test_the_answer_reaches_the_node_verbatim(host: LocalHost) -> None:
-    """No merging, no injected action field. What the consumer sent is what `ask()`
-    returns -- which is the simplification that removed a whole class of v0.1 rule."""
+def test_rejection_skips_the_refund(host: Host) -> None:
     host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
 
-    host.deliver(host.reply(envelope, {"action": "approve", "note": "within budget"}))
-
-    state = host.agent.adapter.graph.get_state(host.adapter.config_for("order-4471"))
-    assert state.values["decision"] == {"action": "approve", "note": "within budget"}
-
-
-def test_rejection_skips_the_refund(host: LocalHost) -> None:
-    host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
-
-    host.deliver(host.reply(envelope, {"action": "reject", "reason": "duplicate claim"}))
+    host.deliver(host.reply(host.latest(), {"action": "reject", "reason": "duplicate claim"}))
 
     assert PAYMENTS_CALLED == []
-    state = host.agent.adapter.graph.get_state(host.adapter.config_for("order-4471"))
-    assert state.values["status"] == "rejected"
+    assert host.state("order-4471")["status"] == "rejected"
 
 
-# ============================================== the crash between run and announce
-def test_a_crash_before_the_announce_is_repaired_by_the_redelivery(host: LocalHost) -> None:
-    """The failure v0.1 needed a store and a sweeper for.
-
-    The graph parked, the process died before anything was published, and there is now no
-    record anywhere that a question exists. What repairs it is SQS redelivering the start
-    message: the router sees the thread is already parked, and republishes rather than
-    starting a fresh turn -- same interrupt id, same `dedupe_key`, so a consumer that
-    somehow did see the first one discards the repeat.
-
-    Re-invoking with the original input instead would ask the question a *second* time
-    under a new id, which is a duplicate no consumer could detect. That is the rule v0.1
-    got from its store of applied message ids, and the reason `pending()` is public.
-    """
-    with pytest.raises(Died):
-        host.deliver(START_MESSAGE, die_after_invoke=True)
-    assert host.announce.events == [], "nobody was told"
-    assert host.agent.pending("order-4471"), "but the graph really is parked"
-
+# ============================================== duplicates: LangGraph's behaviour, asserted
+def test_the_same_answer_delivered_twice_refunds_once(host: Host) -> None:
+    """No check in the host. The second `Command(resume=...)` lands on a thread that has
+    already moved past the interrupt, and LangGraph runs nothing."""
     host.deliver(START_MESSAGE)
-
-    (envelope,) = host.open_envelopes()
-    assert envelope.dedupe_key == f"wait.created:{host.agent.pending('order-4471')[0].interrupt_id}"
-
-    # And a third delivery republishes the same key rather than opening a second question.
-    host.deliver(START_MESSAGE)
-    keys = {e.dedupe_key for e in host.open_envelopes()}
-    assert len(keys) == 1, "three deliveries, one question"
-    assert len(host.open_envelopes()) == 2, "published twice, deduplicable on the key"
-    assert PAYMENTS_CALLED == []
-
-
-def test_a_crash_after_the_refund_does_not_refund_twice(host: LocalHost) -> None:
-    """The side effect happened and the host died before acking. SQS redelivers the
-    approval. `pending()` is what stops it: the thread is no longer parked on that
-    interrupt, so the router drops the message."""
-    host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
-    approval = host.reply(envelope, {"action": "approve"})
-
-    with pytest.raises(Died):
-        host.deliver(approval, die_after_invoke=True)
-    assert PAYMENTS_CALLED == ["order-4471"], "the side effect did happen"
-
-    assert host.deliver(approval) == "ignored: already closed"
-    assert PAYMENTS_CALLED == ["order-4471"], "and did not happen twice"
-
-
-# ====================================================== the caller's own guards
-def test_the_same_click_twice_is_dropped_by_the_router(host: LocalHost) -> None:
-    """v0.1 called this `duplicate` and refused it in `dispatch()`. In v0.2 it is the
-    router's `is_still_open()` check -- same outcome, different owner."""
-    host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
-    approval = host.reply(envelope, {"action": "approve"})
+    approval = host.reply(host.latest(), {"action": "approve"})
 
     host.deliver(approval)
-    assert host.deliver(approval) == "ignored: already closed"
+    host.deliver(approval)
 
     assert PAYMENTS_CALLED == ["order-4471"]
 
 
-def test_a_second_different_decision_arriving_late_is_dropped(host: LocalHost) -> None:
+def test_a_second_different_decision_after_the_first_changes_nothing(host: Host) -> None:
     host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
+    envelope = host.latest()
 
     host.deliver(host.reply(envelope, {"action": "approve"}))
-    late = host.deliver(host.reply(envelope, {"action": "reject"}))
+    host.deliver(host.reply(envelope, {"action": "reject"}))
 
-    assert late == "ignored: already closed"
     assert PAYMENTS_CALLED == ["order-4471"]
+    assert host.state("order-4471")["decision"] == {"action": "approve"}, "the first decision stands"
 
 
-def test_an_answer_for_an_unknown_interrupt_is_dropped(host: LocalHost) -> None:
+def test_the_default_is_just_an_answer_the_consumer_sends(host: Host) -> None:
+    """Timeouts are the consumer's. When they decide the deadline has passed, they send
+    the envelope's `default` as the answer, like any other answer."""
     host.deliver(START_MESSAGE)
+    envelope = host.latest()
 
-    outcome = host.deliver(
-        {"thread_id": "order-4471", "interrupt_id": "not-a-real-id", "answer": {"action": "approve"}}
-    )
+    host.deliver(host.reply(envelope, envelope.default))
 
-    assert outcome == "ignored: already closed"
+    assert host.state("order-4471")["decision"] == {"action": "reject", "reason": "no response within P3D"}
     assert PAYMENTS_CALLED == []
-
-
-# ============================================================== the timeout
-def test_the_timeout_is_the_consumers_to_enforce(host: LocalHost) -> None:
-    """v0.2 publishes the deadline and the default, and does nothing else.
-
-    This is what "the world enforces it" looks like in practice: eleven lines, and they
-    live wherever you already run scheduled work. The graph gets exactly the default its
-    author declared, because nothing in between rewrote it.
-    """
-    host.deliver(START_MESSAGE)
-    (envelope,) = host.open_envelopes()
-
-    def sweep_expired(now: str) -> None:
-        for open_envelope in host.open_envelopes():
-            due = open_envelope.expires_at and open_envelope.expires_at <= now
-            if due and host.is_still_open(open_envelope.thread_id, open_envelope.interrupt_id):
-                host.deliver(host.reply(open_envelope, open_envelope.default))
-
-    sweep_expired("2000-01-01T00:00:00Z")
-    assert PAYMENTS_CALLED == [], "not due yet, and nothing happened"
-
-    sweep_expired("2999-01-01T00:00:00Z")
-
-    state = host.agent.adapter.graph.get_state(host.adapter.config_for("order-4471"))
-    assert state.values["decision"] == {
-        "action": "reject",
-        "reason": "no response within P3D",
-    }, "the author's default, verbatim"
-    assert PAYMENTS_CALLED == []
-    assert envelope.expires_at is not None
 
 
 # ============================================================== parallel and subgraph
 def test_two_parallel_approvals_resume_independently() -> None:
-    """Two questions, two envelopes, and answering one leaves the other exactly where it
-    was -- including still being published as open."""
     from parallel_graphs import build_parallel_graph
 
-    host = LocalHost(build_parallel_graph())
+    host = Host(build_parallel_graph())
     host.deliver({"thread_id": "batch-1", "input": {}})
-    assert len(host.open_envelopes()) == 2
+    first, second = (e for _, e in host.inbox.events)
 
-    first, second = host.open_envelopes()
     host.deliver(host.reply(first, {"action": "approve", "note": "within budget"}))
-
-    assert host.announce.of("resumed")[0].interrupt_id == first.interrupt_id
-    assert host.is_still_open("batch-1", second.interrupt_id)
-
     host.deliver(host.reply(second, {"action": "reject", "note": "within budget"}))
-    values = host.agent.adapter.graph.get_state(host.adapter.config_for("batch-1")).values
-    assert values == {
+
+    assert host.state("batch-1") == {
         "a": {"action": "approve", "note": "within budget"},
         "b": {"action": "reject", "note": "within budget"},
     }
@@ -257,14 +172,11 @@ def test_two_parallel_approvals_resume_independently() -> None:
 def test_a_subgraph_interrupt_parks_and_resumes() -> None:
     from parallel_graphs import build_subgraph_graph
 
-    host = LocalHost(build_subgraph_graph())
+    host = Host(build_subgraph_graph())
     host.deliver({"thread_id": "nested-1", "input": {}})
-
-    (envelope,) = host.open_envelopes()
+    envelope = host.latest()
     assert envelope.question == {"kind": "inner_approval"}
 
     host.deliver(host.reply(envelope, {"action": "approve", "note": "within budget"}))
 
-    assert host.agent.pending("nested-1") == []
-    values = host.agent.adapter.graph.get_state(host.adapter.config_for("nested-1")).values
-    assert values["v"] == {"action": "approve", "note": "within budget"}
+    assert host.state("nested-1")["v"] == {"action": "approve", "note": "within budget"}

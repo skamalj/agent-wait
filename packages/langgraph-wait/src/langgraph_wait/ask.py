@@ -19,16 +19,18 @@ default policy, so a graph that already interrupts gets published without any ed
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from agent_wait import WaitPolicy, check_question_size
 from langgraph.types import interrupt
 
 WAIT_KEY = "__wait__"
+SOURCE_KEY = "__source__"
 QUESTION_KEY = "question"
 
 
-def ask(question: Any, policy: WaitPolicy | None = None) -> Any:
+def ask(question: Any, policy: WaitPolicy | None = None, *, source: Mapping[str, Any] | None = None) -> Any:
     """Park the graph on `question` and return the answer when it arrives.
 
     On the first pass this raises through `interrupt()` and the node does not return. On
@@ -38,7 +40,10 @@ def ask(question: Any, policy: WaitPolicy | None = None) -> Any:
     """
     check_question_size(question)
     resolved = policy or WaitPolicy()
-    return interrupt({QUESTION_KEY: question, WAIT_KEY: resolved.to_dict()})
+    value: dict[str, Any] = {QUESTION_KEY: question, WAIT_KEY: resolved.to_dict()}
+    if source:
+        value[SOURCE_KEY] = dict(source)
+    return interrupt(value)
 
 
 def unwrap(value: Any) -> tuple[Any, WaitPolicy]:

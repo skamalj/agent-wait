@@ -129,7 +129,7 @@ def parallel_graph(log: list[str]) -> Any:
 
 
 # --------------------------------------------------------------------------- 1. ids
-def test_interrupt_id_is_stable_across_reinvocation() -> None:
+def test_question_id_is_stable_across_reinvocation() -> None:
     """The idempotency key is sha256(thread|interrupt|checkpoint). If the id moved, a
     redelivery would create a second wait and rule 1 would be unimplementable."""
     graph = simple_graph()
@@ -235,10 +235,12 @@ def test_known_bug_tasks_over_report_after_a_partial_parallel_resume() -> None:
     """langgraph #4796 / #6792, reproduced.
 
     After resuming one of two parallel interrupts, `get_state().tasks` still lists the
-    *finished* task's interrupt id. A `pending()` built on `task.interrupts` alone
+    *finished* task's interrupt id. Anything built on `task.interrupts` alone
     therefore returns True for an interrupt the graph has already moved past.
 
-    `task.result` is the discriminator, and `LangGraphAdapter.pending()` uses it.
+    `task.result` is the discriminator. agent-wait sidesteps the whole question by
+    reading `result["__interrupt__"]` -- which does not over-report -- rather than
+    `get_state()`; the finding is recorded for anyone who does read state.
     If this test ever fails, LangGraph has fixed the bug and the workaround can go.
     """
     log: list[str] = []
@@ -260,7 +262,8 @@ def test_known_bug_tasks_over_report_after_a_partial_parallel_resume() -> None:
         )
     record(f"  get_state().next         = {graph.get_state(config).next}")
     record("  -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.")
-    record("  -> task.result is the discriminator, and is what pending() reads.")
+    record("  -> task.result is the discriminator. agent-wait reads result['__interrupt__'],")
+    record("     which does not over-report, and never touches get_state().")
     record()
 
     reported = {i.id for task in tasks.values() for i in task.interrupts}
@@ -414,8 +417,7 @@ def test_known_limitation_two_interrupting_tools_in_one_toolnode_share_an_id() -
        still genuinely parked.
 
     For agent-wait that means `dedupe_key` would make a consumer discard the second
-    question as a duplicate of the first, and `pending()` would read `result={}` as
-    finished. The rule this pins is therefore: **one `interrupt()` per node.** Put each
+    question as a duplicate of the first. The rule this pins is therefore: **one `interrupt()` per node.** Put each
     approval-requiring tool in its own node, which is also what #6208's workaround and the
     "double execution" write-ups arrive at independently.
 
@@ -440,8 +442,8 @@ def test_known_limitation_two_interrupting_tools_in_one_toolnode_share_an_id() -
     record(f"  after resuming b         = {len(final.get('__interrupt__', []))} interrupts left")
     record("  -> #6624: only one interrupt surfaces per invoke, not two.")
     record("  -> #6626: the second carries the SAME id as the first. A different question,")
-    record("     an identical id. dedupe_key would drop it; pending() would read result={}")
-    record("     as finished. agent-wait's rule: one interrupt() per node.")
+    record("     an identical id, so dedupe_key would drop it. agent-wait's rule: one")
+    record("     interrupt() per node, or HumanInTheLoopMiddleware, which batches.")
     record()
 
     assert len(first) == 1, "if two now surface, #6624 is fixed -- update the docs"

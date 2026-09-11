@@ -1,6 +1,6 @@
 [project]
 name = "agent-wait"
-version = "0.2.1"
+version = "0.3.0"
 description = "Get a LangGraph interrupt out of the process -- to a topic, a queue, a webhook, a table -- so anyone can answer it, and the answer back in."
 readme = "README.md"
 requires-python = ">=3.12"

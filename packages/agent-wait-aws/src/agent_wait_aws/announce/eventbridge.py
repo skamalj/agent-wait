@@ -48,6 +48,6 @@ class EventBridgeAnnounce(BaseAnnounce):
         if response.get("FailedEntryCount"):
             self._log.error(
                 "EventBridge rejected the envelope for interrupt %s: %s",
-                envelope.interrupt_id,
+                envelope.question_id,
                 json.dumps(response.get("Entries", []), default=str),
             )

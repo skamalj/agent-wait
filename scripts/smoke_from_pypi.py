@@ -1,13 +1,10 @@
 """Prove the *published* packages work: run in a clean venv with nothing but PyPI installs.
 
     uv venv .smoke && . .smoke/bin/activate
-    uv pip install agent-wait langgraph-wait agent-wait-aws
+    uv pip install agent-wait langgraph-wait agent-wait-aws langchain
     python scripts/smoke_from_pypi.py
 
-Not an import check. A real graph parks on a question, the envelope is published through
-three announcers (in-memory, a signed webhook to a local server, and the AWS package's
-adapters constructed against a fake client), the answer is routed back through
-`is_answer()` / `resume_command()`, and the graph finishes with the answer verbatim.
+Not an import check. Real graphs, both modes, every announcer, the round trip.
 Exits non-zero on the first thing that is wrong.
 """
 
@@ -20,14 +17,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, TypedDict
 
 import agent_wait
-from agent_wait import InMemoryAnnounce, WaitPolicy, WaitPublisher, WebhookAnnounce, verify_signature
+from agent_wait import InMemoryAnnounce, WaitPolicy, WebhookAnnounce, verify_signature
 from agent_wait_aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, SqsAnnounce
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph_wait import LangGraphAdapter, ask, is_answer, resume_command
+from langgraph.types import Command
+from langgraph_wait import ask, hitl, publish_interrupts
 
 SECRET = b"smoke"
 PAID: list[str] = []
+received: list[dict[str, Any]] = []
 
 
 def check(condition: bool, what: str) -> None:
@@ -36,46 +35,11 @@ def check(condition: bool, what: str) -> None:
         sys.exit(1)
 
 
-# ---------------------------------------------------------------- a graph
 class State(TypedDict, total=False):
     claim: str
     amount: int
     decision: Any
     status: str
-
-
-def review(state: State) -> State:
-    if state["amount"] <= 100:
-        return {"decision": {"action": "approve"}}
-    return {
-        "decision": ask(
-            {"kind": "expense", "claim": state["claim"], "amount": state["amount"]},
-            policy=WaitPolicy(
-                timeout="PT1H", default={"action": "reject"}, allowed_actions=("approve", "reject")
-            ),
-        )
-    }
-
-
-def pay(state: State) -> State:
-    PAID.append(state["claim"])
-    return {"status": "paid"}
-
-
-def build() -> Any:
-    g = StateGraph(State)
-    g.add_node("review", review)
-    g.add_node("pay", pay)
-    g.add_node("decline", lambda s: {"status": "declined"})
-    g.add_edge(START, "review")
-    g.add_conditional_edges("review", lambda s: "pay" if s["decision"]["action"] == "approve" else "decline")
-    g.add_edge("pay", END)
-    g.add_edge("decline", END)
-    return g.compile(checkpointer=InMemorySaver())
-
-
-# ---------------------------------------------------------------- a webhook receiver
-received: list[dict[str, Any]] = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -89,10 +53,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-# ---------------------------------------------------------------- a fake AWS client
 class FakeClient:
-    """Records calls; the AWS adapters are constructed and driven without a network."""
-
     def __init__(self) -> None:
         self.calls: list[str] = []
 
@@ -104,84 +65,114 @@ class FakeClient:
         return call
 
 
-def main() -> None:
-    print(
-        f"agent-wait {agent_wait.__version__} · langgraph-wait · agent-wait-aws  (from {agent_wait.__file__})"
-    )
+POLICY = WaitPolicy(timeout="PT1H", default={"action": "reject"}, allowed_actions=("approve", "reject"))
 
+
+def interrupt_graph() -> Any:
+    def review(s: State) -> State:
+        if s["amount"] <= 100:
+            return {"decision": {"action": "approve"}}
+        return {"decision": ask({"kind": "expense", "claim": s["claim"], "amount": s["amount"]}, POLICY)}
+
+    def pay(s: State) -> State:
+        PAID.append(s["claim"])
+        return {"status": "paid"}
+
+    g = StateGraph(State)
+    g.add_node("review", review)
+    g.add_node("pay", pay)
+    g.add_node("decline", lambda s: {"status": "declined"})
+    g.add_edge(START, "review")
+    g.add_conditional_edges("review", lambda s: "pay" if s["decision"]["action"] == "approve" else "decline")
+    g.add_edge("pay", END)
+    g.add_edge("decline", END)
+    return g.compile(checkpointer=InMemorySaver())
+
+
+def main() -> None:
+    print(f"agent-wait {agent_wait.__version__}  (from {agent_wait.__file__})")
     server = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/hook"
 
-    memory = InMemoryAnnounce()
-    aws = FakeClient()
-    agent = WaitPublisher(
-        LangGraphAdapter(build()),
-        announce=[
-            memory,
-            WebhookAnnounce(url, secret=SECRET),
-            SnsAnnounce("arn:aws:sns:ap-south-1:000000000000:t", client=aws),
-            SqsAnnounce("https://sqs.example/q.fifo", client=aws),
-            EventBridgeAnnounce("bus", client=aws),
-            DynamoDbAnnounce("approvals", table=aws),
-        ],
+    memory, aws = InMemoryAnnounce(), FakeClient()
+    announce = [
+        memory,
+        WebhookAnnounce(url, secret=SECRET),
+        SnsAnnounce("arn:aws:sns:ap-south-1:000000000000:t", client=aws),
+        SqsAnnounce("https://sqs.example/q.fifo", client=aws),
+        EventBridgeAnnounce("bus", client=aws),
+        DynamoDbAnnounce("approvals", table=aws),
+    ]
+    cfg = lambda t: {"configurable": {"thread_id": t}}  # noqa: E731
+
+    print("interrupt mode: small claim, no question")
+    graph = interrupt_graph()
+    check(
+        publish_interrupts(graph.invoke({"claim": "c-1", "amount": 50}, cfg("c-1")), "c-1", announce) == [],
+        "nothing published",
     )
-
-    print("small claim: no question")
-    agent.invoke({"claim": "c-1", "amount": 50}, "c-1")
     check(PAID == ["c-1"], "paid without asking")
-    check(memory.events == [], "nothing published")
 
-    print("large claim: parks")
-    agent.invoke({"claim": "c-2", "amount": 5000}, "c-2")
-    check([t for t, _ in memory.events] == ["created"], "wait.created published")
-    envelope = memory.last()
-    assert envelope is not None
+    print("interrupt mode: large claim parks")
+    (envelope,) = publish_interrupts(
+        graph.invoke({"claim": "c-2", "amount": 5000}, cfg("c-2")), "c-2", announce
+    )
     check(envelope.question == {"kind": "expense", "claim": "c-2", "amount": 5000}, "question intact")
     check(envelope.expires_at is not None, "expires_at set from PT1H")
-    check(envelope.reply_with["interrupt_id"] == envelope.interrupt_id, "reply_with names the interrupt")
-    check(len(agent.pending("c-2")) == 1, "pending() sees it")
+    check(envelope.reply_with["question_id"] == envelope.question_id, "reply_with names the question")
+    check(envelope.to_dict()["reply_to"] is None, "reply_to is optional and null")
 
-    print("webhook")
-    check(len(received) == 1, "one POST")
-    check(received[0]["headers"]["X-Agent-Wait-Event"] == "wait.created", "event header")
+    print("announcers")
+    check(
+        len(received) == 1 and received[0]["headers"]["X-Agent-Wait-Event"] == "wait.created",
+        "webhook posted",
+    )
     check(
         verify_signature(SECRET, received[0]["body"], received[0]["headers"]["X-Agent-Wait-Signature"]),
         "signature verifies",
     )
-    check(json.loads(received[0]["body"])["interrupt_id"] == envelope.interrupt_id, "body matches")
-
-    print("aws adapters")
+    check(json.loads(received[0]["body"])["question_id"] == envelope.question_id, "webhook body matches")
     check(
         aws.calls == ["publish", "send_message", "put_events", "put_item"],
-        f"each adapter delivered: {aws.calls}",
+        f"aws adapters delivered: {aws.calls}",
     )
 
-    print("redelivered start: republish, do not re-ask")
-    before = envelope.interrupt_id
-    if agent.pending("c-2"):
-        agent.republish("c-2")
-    check(memory.events[-1][1].interrupt_id == before, "same interrupt id republished")
-    check(memory.events[-1][1].dedupe_key == envelope.dedupe_key, "same dedupe key")
-
-    print("answer arrives")
-    answer = {**dict(envelope.reply_with), "answer": {"action": "approve", "note": "smoke"}}
-    check(is_answer(answer), "is_answer() recognises it")
-    still_open = any(p.interrupt_id == answer["interrupt_id"] for p in agent.pending("c-2"))
-    check(still_open, "still open before resume")
-    agent.invoke(resume_command(answer), "c-2")
+    print("the answer comes back through the stub")
+    reply = {**dict(envelope.reply_with), "answer": {"action": "approve", "note": "smoke"}}
+    result = graph.invoke(Command(resume={reply["question_id"]: reply["answer"]}), cfg(reply["thread_id"]))
+    check(publish_interrupts(result, "c-2", announce) == [], "nothing left parked")
     check(PAID == ["c-1", "c-2"], "paid exactly once")
-    check(agent.pending("c-2") == [], "no longer pending")
-    check([t for t, _ in memory.events][-1] == "resumed", "wait.resumed published")
-    state = agent.adapter.graph.get_state(agent.adapter.config_for("c-2"))
     check(
-        state.values["decision"] == {"action": "approve", "note": "smoke"}, "answer reached the node verbatim"
+        graph.get_state(cfg("c-2")).values["decision"] == {"action": "approve", "note": "smoke"},
+        "answer verbatim",
     )
+    graph.invoke(Command(resume={reply["question_id"]: reply["answer"]}), cfg("c-2"))
+    check(PAID == ["c-1", "c-2"], "a duplicate answer runs nothing")
 
-    print("late duplicate answer")
-    still_open = any(p.interrupt_id == answer["interrupt_id"] for p in agent.pending("c-2"))
-    check(not still_open, "router would drop it")
-    check(PAID == ["c-1", "c-2"], "still paid once")
+    print("async mode: the decorator publishes, the graph carries on")
+    inbox = InMemoryAnnounce()
+
+    @hitl(POLICY, mode="async", announce=[inbox])
+    def big_transfer(account: str, amount: int) -> str:
+        PAID.append(account)
+        return "transferred"
+
+    g = StateGraph(State)
+    g.add_node("transfer", lambda s: {"decision": big_transfer(account="acc-9", amount=5000)})
+    g.add_node("after", lambda s: {"status": "carried on"})
+    g.add_edge(START, "transfer")
+    g.add_edge("transfer", "after")
+    g.add_edge("after", END)
+    out = g.compile(checkpointer=InMemorySaver()).invoke({}, cfg("t"))
+    check("__interrupt__" not in out, "nothing parked")
+    check(out["decision"]["status"] == "pending_approval", "tool returned pending")
+    check(out["status"] == "carried on", "next node ran in the same invoke")
+    check(PAID == ["c-1", "c-2"], "tool body did not run")
+    check(
+        len(inbox.events) == 1 and inbox.events[0][1].source == {"tool": "big_transfer"},
+        "decorator published it",
+    )
 
     server.shutdown()
     print("\nsmoke test passed against the installed packages")

@@ -1,14 +1,16 @@
-"""langgraph-wait: the LangGraph side of agent-wait."""
+"""langgraph-wait: `ask()` or `@hitl` in the graph, `publish_interrupts()` after the run."""
 
-from .adapter import LangGraphAdapter
 from .ask import WAIT_KEY, ask, unwrap
-from .resume import is_answer, resume_command
+from .hitl import hitl, policy_for, question_id_for
+from .publish import publish_interrupts, questions_in
 
 __all__ = [
     "WAIT_KEY",
-    "LangGraphAdapter",
     "ask",
-    "is_answer",
-    "resume_command",
+    "hitl",
+    "policy_for",
+    "publish_interrupts",
+    "question_id_for",
+    "questions_in",
     "unwrap",
 ]

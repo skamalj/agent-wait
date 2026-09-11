@@ -1,37 +1,37 @@
 # Message formats
 
-This is the contract. Three JSON documents: one agent-wait sends, two it can be given
-back. A team that has read only this file should be able to write a working consumer *and*
-a working host.
-
-Everything else in this repository is an implementation detail. These are not.
+This is the contract. One document agent-wait **sends**, and a recommended shape for what
+a consumer **sends back**. The first is precise and tested field by field; the second is
+guidance — agent-wait never receives it, so nothing enforces it, but a consumer and a
+host that both follow it need no other agreement.
 
 ---
 
-## 1. The wait envelope (outbound)
+## 1. The envelope (outbound)
 
-Emitted by every announce adapter, on every transition. This is what arrives on your SNS
-topic, your queue, your bus, or as a row in your table.
+One per question, emitted through every announcer. This is what arrives on your topic,
+your queue, your webhook, or as a row in your table.
 
 ```json
 {
   "type": "wait.created",
   "event_id": "01JAV3K2R8Q9WZ7M4X1YB6N0PD",
   "thread_id": "order-4471",
-  "interrupt_id": "a1b2c3d4e5f60718",
+  "question_id": "a1b2c3d4e5f60718",
   "question": {
     "kind": "refund_approval",
     "order_id": "order-4471",
-    "amount": 41000,
-    "customer": "customer-of-order-4471"
+    "amount": 41000
   },
   "allowed_actions": ["approve", "reject"],
-  "expires_at": "2026-09-12T09:00:00Z",
+  "expires_at": "2026-09-14T09:00:00Z",
   "default": { "action": "reject", "reason": "no response within P3D" },
-  "reply_to": { "kind": "sqs", "url": "https://sqs.ap-south-1.amazonaws.com/…/agent-runs.fifo" },
+  "answer_ttl": "PT15M",
+  "source": { "tool": "issue_refund" },
+  "reply_to": null,
   "reply_with": {
     "thread_id": "order-4471",
-    "interrupt_id": "a1b2c3d4e5f60718",
+    "question_id": "a1b2c3d4e5f60718",
     "answer": null
   },
   "correlation": null,
@@ -39,144 +39,139 @@ topic, your queue, your bus, or as a row in your table.
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `type` | `wait.created` or `wait.resumed`. Nothing else. |
-| `event_id` | ULID, fresh on every publish. Useful in logs. **Not** the deduplication key. |
-| `thread_id` | The agent's conversation identity. |
-| `interrupt_id` | The question's identity, stable for as long as the question stands. |
-| `question` | Whatever the agent asked. Opaque to every adapter; only your UI interprets it. |
-| `allowed_actions` | Which answers are meaningful. **Advisory** — see below. |
-| `expires_at` | RFC 3339 UTC, or `null` when the wait has no timeout. **Advisory.** |
-| `default` | What the graph's author said to assume if nobody answers. **Advisory.** |
-| `reply_to` | **Optional; `null` unless the host set one.** A hint for where to send the answer. The library never uses it — it builds no return leg. |
-| `reply_with` | A filled-in reply. Copy it, set `answer`, post it to `reply_to`. |
-| `correlation` | `{"provider": …, "id": …}` when the wait is tied to an external job; else `null`. |
-| `tags` | Routing hints from the policy. Become SNS message attributes, so filter policies can use them. |
+| Field | Type | Meaning |
+|---|---|---|
+| `type` | string | Always `wait.created`. |
+| `event_id` | ULID | Fresh on every publish. For logs and tracing. **Not** the deduplication key. |
+| `thread_id` | string | The agent's conversation identity. |
+| `question_id` | string | The question's identity. In interrupt mode it is LangGraph's `Interrupt.id`; in async mode it is derived from thread + tool + args. Stable across republishes. |
+| `question` | any | Whatever the graph asked. Opaque to every adapter; only your UI interprets it. |
+| `allowed_actions` | string[] | Which answers are meaningful. Advisory. |
+| `expires_at` | RFC 3339 UTC or null | When the asker considers the question stale. Advisory. Measured from publish time unless the caller supplied `asked_at`. |
+| `default` | any or null | What the asker said to assume if nobody answers. Advisory. |
+| `answer_ttl` | ISO 8601 duration or null | How long an answer stays usable after it is given. Advisory. |
+| `source` | object or null | Where it came from — `{"tool": ...}`, `{"node": ...}`, or for a middleware batch `{"tools": [...], "via": "HumanInTheLoopMiddleware"}`. |
+| `reply_to` | object or null | A hint for where to send the answer, if the host chose to publish one. Null otherwise. |
+| `reply_with` | object | A filled-in reply. Copy it, set `answer`, send it to the agent's entry point. |
+| `correlation` | object or null | `{"provider": ..., "id": ...}` when the question is tied to an external job. |
+| `tags` | object | Routing hints from the policy. Become SNS message attributes, so filter policies can use them. |
 
-### Deduplicate on `type` + `interrupt_id`
+### Deduplicate on `type` + `question_id`
 
-Not on `event_id`. The same question is republished whenever a start message is
-redelivered or an operator calls `republish()`, and each publish mints a fresh
-`event_id` — so deduplicating on it would show the same approval twice.
+The same question **will** be published more than once — a redelivered start message
+re-runs the thread, and LangGraph hands back the same `Interrupt.id`; an async tool
+called twice with the same arguments produces the same derived id. Each publish mints a
+fresh `event_id`, so deduplicating on that would show the same approval twice.
 
-`interrupt_id` is stable across re-entry and resume-from-checkpoint (verified against
-langgraph 1.2.11 in `test_spike_langgraph.py`), and `type` keeps a close from cancelling
-out its own open. The `WaitEnvelope.dedupe_key` property is exactly `"{type}:{interrupt_id}"`.
+`WaitEnvelope.dedupe_key` is `"wait.created:<question_id>"`. `SqsAnnounce` sends it as
+the FIFO `MessageDeduplicationId`; `DynamoDbAnnounce` uses it as the item key;
+`WebhookAnnounce` sends it as `X-Agent-Wait-Dedupe-Key`.
 
-### "Advisory" means the library does not enforce it
+### Everything marked *advisory* is exactly that
 
-`allowed_actions`, `expires_at` and `default` are published so that *you* can act on
-them. agent-wait does not check an answer against `allowed_actions`, does not notice when
-`expires_at` passes, and never sends `default` itself. It cannot: since v0.2 no answer
-passes through this library. See `migrating-from-0.1.md`.
+agent-wait publishes `allowed_actions`, `expires_at`, `default` and `answer_ttl` so that
+whoever consumes the envelope has the asker's intent in machine-readable form. Nothing
+in agent-wait acts on any of them — it never sees the answer.
 
-### What a consumer should do with it
+### The middleware batch
 
-1. **Dedupe on `type` + `interrupt_id`.**
-2. **Render `question` and offer exactly `allowed_actions`.** Nothing will refuse a
-   third button, which is precisely why you should not draw one.
-3. **Answer by copying `reply_with`** — set `answer`, post it to the agent's entry
-   point. If the host published a `reply_to`, that is the address and it may differ per
-   environment; if it is `null`, your integration already knows where the agent listens.
-4. **Treat `wait.resumed` as "close the ticket".** It may arrive because somebody else
-   answered, or because a timeout sweep sent the default.
+When the question came from LangChain's `HumanInTheLoopMiddleware`, several tool calls
+share one `Interrupt`, so they share one envelope. `question` is then:
+
+```json
+{
+  "actions": [ { "name": "issue_refund", "args": { "order_id": "o1", "amount": 41000 } },
+               { "name": "send_email",   "args": { "to": "x@y" } } ],
+  "review":  [ { "action_name": "issue_refund", "allowed_decisions": ["approve", "edit", "reject", "respond"] },
+               { "action_name": "send_email",   "allowed_decisions": ["approve", "reject"] } ]
+}
+```
+
+and the answer is the middleware's own shape, one decision per action **in order**:
+`{"decisions": [{"type": "approve"}, {"type": "reject", "message": "not now"}]}`.
 
 ---
 
-## 2. The answer message (inbound)
+## 2. The answer (inbound) — recommended
 
-Send this to the agent's entry point (`reply_to`, if published). On an SQS FIFO entry
-point, use `MessageGroupId = thread_id`.
+agent-wait does not receive this. It is the shape a consumer should send and a host
+should expect, so that "is this message a new request or an answer?" is one line.
 
 ```json
 {
   "thread_id": "order-4471",
-  "interrupt_id": "a1b2c3d4e5f60718",
-  "answer": { "action": "approve", "note": "within budget" }
+  "question_id": "a1b2c3d4e5f60718",
+  "answer": { "action": "approve", "note": "within budget" },
+  "valid_until": "2026-09-12T09:00:00Z"
 }
 ```
 
-| Field | Required | Meaning |
+| Field | | Meaning |
 |---|---|---|
-| `thread_id` | yes | Which conversation. |
-| `interrupt_id` | yes | Which question. Its presence is what makes this a resume. |
-| `answer` | yes | **Returned verbatim** by the `ask()` call that raised the question. |
+| `thread_id` | required | Which conversation. Copied from `reply_with`. |
+| `question_id` | required | Which question. Copied from `reply_with`. **Its presence is what makes this an answer.** |
+| `answer` | required | Returned **verbatim** by the `ask()` or `@hitl` call. Any JSON. |
+| `valid_until` | optional | The answer's own expiry, if the approver wants one. |
 
-`answer` is whatever you want it to be. The library does not merge anything into it, does
-not add an `action` key, and does not validate it — a string, a number and a nested object
-are all fine, and the node receives exactly what you sent. If your graph reads
-`decision["action"]`, then send `{"action": "approve"}`.
-
-There is no token and no `answer_id`. Authentication is your entry point's business — the
-queue policy, the API Gateway authoriser, the IAM role allowed to `SendMessage`. agent-wait
-deliberately does not pretend otherwise.
+`answer` is whatever the graph expects. Nothing is merged into it or added to it. If the
+graph reads `decision["action"]`, send `{"action": "approve"}`; for a `@hitl` tool,
+`{"action": "approve"}` runs it, `{"action": "approve", "args": {...}}` runs it with
+those arguments, and anything else returns the decision to the model as the tool result.
 
 ---
 
-## 3. The start message (inbound)
+## 3. The start message (inbound) — recommended
 
-The ordinary "please run" message, unchanged from whatever you had before.
+Whatever your agent already accepted. Only its *absence* of `question_id` matters.
 
 ```json
-{
-  "thread_id": "order-4471",
-  "input": { "order_id": "order-4471", "amount": 41000 }
-}
+{ "thread_id": "order-4471", "input": { "order_id": "order-4471", "amount": 41000 } }
 ```
-
-**Starts and answers arrive at the same place.** There is no second endpoint to build or
-secure.
 
 ---
 
-## 4. Telling them apart
+## 4. What a host does with an answer
+
+Interrupt mode:
 
 ```python
-if message.get("interrupt_id"):
-    agent.invoke(resume_command(message), message["thread_id"])  # a resume
+if "question_id" in message:
+    value = Command(resume={message["question_id"]: message["answer"]})
 else:
-    agent.invoke(message["input"], message["thread_id"])  # a start
+    value = message["input"]
+
+result = graph.invoke(value, {"configurable": {"thread_id": message["thread_id"]}})
+publish_interrupts(result, message["thread_id"], announce)
 ```
 
-`interrupt_id` present → resume. Absent → start. That is the whole rule, and it holds by
-construction rather than by convention: the envelope ships a filled-in `reply_with` that
-already contains the key, and the consumer echoes it back.
+That is the whole host. LangGraph loads the thread's latest checkpoint by `thread_id`,
+re-runs the interrupted node from the top, and the `ask()` call returns `answer`.
 
-`langgraph_wait.is_answer(message)` is that check as a named function, and
-`resume_command(message)` builds the `Command`. Both are pure functions.
+Facts worth knowing, none of which the host has to code for:
 
-### One more line you need
+- **A duplicate answer runs nothing.** A second `Command(resume=...)` for a question the
+  thread has already moved past is a no-op in LangGraph. Verified on 1.2.11.
+- **A different answer after the first also runs nothing.** The first decision stands.
+- **`expires_at` is the consumer's to honour.** If nobody answers, the consumer decides
+  the deadline has passed and sends `default` as the answer — it is an ordinary answer.
+  If the consumer sends nothing, the thread waits indefinitely; that is LangGraph.
+- **`valid_until` / `answer_ttl` are the consumer's and host's to honour**, if they care.
 
-A start message for a thread that is **already parked** must not be re-invoked with its
-original input — LangGraph would treat it as a fresh turn and ask the question again under
-a new `interrupt_id`, which no consumer could deduplicate away.
-
-```python
-if agent.pending(thread_id):
-    agent.republish(thread_id)  # a redelivery; repair the announce, do not re-ask
-else:
-    agent.invoke(message["input"], thread_id)
-```
-
-`examples/refund_agent/handler.py` is the whole router, with both guards, in a dozen lines.
+Async mode: nothing is parked and nothing is resumed. The decision arrives as a new
+message and the host invokes the graph with it however the graph is designed to react.
+LangGraph has no memory of the question; if you want one, the `DynamoDbAnnounce` row (or
+anything else you keep) is it.
 
 ---
 
-## 5. What you own
+## 5. The DynamoDB row
 
-The list is short, and it is the price of the library being this small.
+`DynamoDbAnnounce` writes one item per question and never touches it again:
 
-| Concern | Who does it now | How |
-|---|---|---|
-| Deciding start vs resume | you | `interrupt_id` present or not |
-| Not re-asking a parked thread | you | `pending()` then `republish()` |
-| Enforcing `expires_at` | you | a scheduled sweep over your open questions, sending `default` |
-| Authenticating an answer | you | the queue policy / authoriser in front of your entry point |
-| Rejecting a stale answer | you | `pending()` before invoking; see `is_still_open()` |
-| Serialising two answers to one question | your transport | SQS FIFO with `MessageGroupId = thread_id` |
+```
+pk = "THREAD#<thread_id>"    sk = "WAIT#<question_id>"    status = "open"
+```
 
-The last one is the one to think hardest about. `pending()` narrows the window but does
-not close it: two answers a millisecond apart can both see the question open. On a FIFO
-queue keyed by thread they are delivered in order and the second finds it closed. Without
-that ordering guarantee, you need a conditional write of your own.
+plus every envelope field above, with `expires_at` stored as the string `never` when null
+(so the `by_status` GSI's range key always exists, and a range condition never returns
+those rows as overdue). Whether you close rows, sweep them, or ignore them is yours.

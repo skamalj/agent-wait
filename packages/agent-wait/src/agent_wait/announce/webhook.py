@@ -8,7 +8,7 @@ transition, JSON body, three headers a receiver can route or verify on:
 
     Content-Type:              application/json
     X-Agent-Wait-Event:        wait.created | wait.resumed
-    X-Agent-Wait-Dedupe-Key:   wait.created:<interrupt_id>
+    X-Agent-Wait-Dedupe-Key:   wait.created:<question_id>
     X-Agent-Wait-Signature:    sha256=<hex>          (only when `secret` is given)
 
 ## Signing

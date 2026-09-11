@@ -4,197 +4,128 @@
 
 ```mermaid
 flowchart LR
-    subgraph agent["your process"]
-        Q[["entry point<br/>(one queue)"]] --> R{route}
-        R -->|no interrupt_id| I["agent.invoke(input, thread)"]
-        R -->|interrupt_id| RS["agent.invoke(resume_command, thread)"]
-        I --> G[["graph.invoke()"]]
+    subgraph host["your process"]
+        Q[["entry point"]] --> R{"question_id<br/>in message?"}
+        R -->|no| I["graph.invoke(input, cfg)"]
+        R -->|yes| RS["graph.invoke(Command(resume=...), cfg)"]
+        I --> G[["LangGraph"]]
         RS --> G
-        G -.->|ask&#40;&#41; parks a node| CP[(checkpointer)]
-        G --> D{"diff pending()<br/>before vs after"}
+        G -.->|"ask() parks a node"| CP[(checkpointer)]
+        G --> P["publish_interrupts(result, thread_id, announce)"]
     end
-
-    D -->|new| CREATED["wait.created"]
-    D -->|gone| RESUMED["wait.resumed"]
-    CREATED & RESUMED --> A[["announce adapters"]]
-    A --> W(["the world:<br/>topic, queue, bus, table"])
-    W --> H([a human, or a timeout sweep])
-    H -->|"copy reply_with,<br/>set answer, post to reply_to"| Q
+    P -->|"one envelope per Interrupt"| A[["announcers"]]
+    A --> W(["topic · queue · webhook · table"])
+    W --> H([a human, or a system])
+    H -->|"reply_with + answer"| Q
 ```
 
-Two arrows are worth staring at.
+The library is the `P` box. Everything else in the host is yours, and it is one `if`.
 
-**The loop closes on the same queue it started from.** An answer is not a special kind of
-traffic arriving at a special endpoint; it is a message on the agent's ordinary entry
-point, and `interrupt_id` is what distinguishes it. There is no answer API to build,
-secure, scale or pay for.
+## What `publish_interrupts` reads, and why it needs nothing else
 
-**The checkpointer is the only state.** agent-wait writes nothing. What a thread is parked
-on is read from the framework every time it is asked, which is why two processes cannot
-disagree about it and why there is no repair pass.
+`graph.invoke()` returns the run's output. If a node called `interrupt()`, the output
+carries `__interrupt__`: a sequence of `Interrupt` objects. Per the LangGraph reference,
+an `Interrupt` has two attributes — `value` (what was passed to `interrupt()`) and `id`.
+`ns`, `when` and `resumable` were removed in 0.6.
 
-## The publisher
-
-`WaitPublisher.invoke()` is the whole library:
+That is the entire input. `ask()` packed the question and the policy into `value`;
+`id` is what the answer has to carry back; `thread_id` is the one thing the result does
+not echo, so the host passes it. No graph handle, no `get_state()`, no checkpointer —
+the library never touches persistence, and it is not in the process when the answer
+arrives.
 
 ```python
-before = {p.interrupt_id: p for p in adapter.pending(thread_id)}
-result = adapter.invoke(value, config)
-after = {p.interrupt_id: p for p in adapter.pending(thread_id)}
-
-for new in after - before:
-    publish("created", ...)
-for gone in before - after:
-    publish("resumed", ...)
+for item in result["__interrupt__"]:
+    question, policy = unwrap(item.value)
+    envelopes.append(build_envelope(thread_id, Question(item.id, question, policy)))
 ```
 
-Two `get_state()` reads per invoke. The framework stays the only source of truth, so
-nothing can drift out of sync with it — there is nothing to be out of sync *with*.
+## Why not `get_state()`
 
-That also determines what can be published at all. A wait has exactly two observable
-states, parked and not, so there are exactly two transitions. v0.1's `answered`, `expired`
-and `cancelled` were transitions of a *record*, describing the library's opinion about an
-answer it had accepted; with no record and no answer, they have nothing to describe.
+It would work, and it over-reports. After one of two parallel interrupts is resumed,
+`get_state().tasks[*].interrupts` still lists the finished task's id (langgraph #4796 /
+#6792; reproduced on 1.2.11 in `test_spike_langgraph.py`). `result["__interrupt__"]` lists
+only what *this run* raised, which is exactly the set to publish. Reading the result
+instead of the state removed a filter, a caveat, and a whole class of bug.
 
-## The adapter
+## Three interrupt shapes, one envelope
 
-Three methods, and one implementation:
+| raised by | `Interrupt.value` | published as |
+|---|---|---|
+| `ask(question, policy)` | `{"question": …, "__wait__": policy}` | one envelope, that policy |
+| bare `interrupt(value)` | `value` | one envelope, default policy |
+| `HumanInTheLoopMiddleware` | `{"action_requests": […], "review_configs": […]}` | **one envelope for the batch**; policy from `@hitl` on the first tool |
 
-```python
-class FrameworkAdapter(Protocol):
-    def config_for(self, thread_id: str) -> dict[str, Any]: ...
-    def invoke(self, value: Any, config: Any) -> Any: ...
-    def pending(self, thread_id: str) -> list[PendingInterrupt]: ...
-```
+The middleware batches every tool call needing review into one interrupt, and its answer
+is `{"decisions": […]}` in batch order. That also sidesteps the ToolNode same-id problem
+below, because there is only one interrupt.
 
-The core never imports LangGraph. `pending()` is where all the framework's sharp edges get
-handled, and there is one that matters.
+## The two modes of `@hitl`
 
-### LangGraph 1.2.x caveat: `tasks[*].interrupts` over-reports
+**Interrupt** (default): the wrapper calls `ask({"tool", "args"}, policy)` before the
+tool body. The thread parks. `publish_interrupts` after the run announces it.
+`{"action": "approve"}` runs the tool; `{"action": "approve", "args": {…}}` runs it with
+those; anything else is returned to the model as the tool's result, unexecuted.
 
-Verified against langgraph 1.2.11 (langgraph
-[#4796](https://github.com/langchain-ai/langgraph/issues/4796) /
-[#6792](https://github.com/langchain-ai/langgraph/issues/6792)). With two interrupts in
-one superstep, resume one, and the *finished* task still lists its interrupt id:
+**Async**: the wrapper *is* the publisher. It announces through the decorator's own
+announcers, with `question_id = sha256(thread | tool | args)`, and returns
+`{"status": "pending_approval", "question_id"}` without running the body. Nothing is
+parked; nothing is called after the run; the graph carries on. The decision arrives as a
+new message and the graph acts on it however it was designed to.
 
-```text
-resumed                  = <id-F> (node 'na'); still parked = <id-G> (node 'nb')
-task 'na'   interrupts=['<id-F>'] result={'a': {'ok': 1}} error=None
-task 'nb'   interrupts=['<id-G>'] result=None error=None
-get_state().next         = ('nb',)
-```
+The difference is *where* publishing happens — inside the tool at call time, or after
+the run from the result — and that in async mode LangGraph remembers nothing. The
+envelope, the announcers and the recommended answer shape are identical.
 
-`next` says `('nb',)` and `task 'na'` has a `result` — but `na` still advertises its
-interrupt. The discriminator is **`task.result`**, which holds a finished task's return
-value and is `None` only while the task is genuinely parked. `pending()` skips any task
-with a result.
+## Identity
 
-Getting this wrong is not subtle in its consequences. `pending()` decides which questions
-are published as open, which answers are accepted as still live, and what `republish()`
-re-announces. Reading `tasks[*].interrupts` naively would leave an answered approval
-showing as open forever, and would accept a second approval for a node that already ran.
+| | value | stable? |
+|---|---|---|
+| `question_id` | `Interrupt.id` (interrupt mode) or `sha256(thread\|tool\|args)` (async) | for as long as the question stands |
+| `event_id` | a fresh ULID | no — one per publish |
+| `dedupe_key` | `"wait.created:<question_id>"` | yes |
 
-`test_a_resumed_parallel_sibling_is_not_reported_as_pending` asserts *both* the correct
-behaviour and the raw over-report, so a LangGraph release that fixes the bug fails the
-test rather than passing silently. The message on that assertion says the filter may then
-be removable.
+Consumers deduplicate on `dedupe_key`. The same question is published again whenever a
+start message is redelivered (LangGraph hands back the same `Interrupt.id` on re-entry —
+verified) or an async tool is called again with the same arguments. `SqsAnnounce` sends
+the key as the FIFO deduplication id; `DynamoDbAnnounce` uses it as the item key;
+`WebhookAnnounce` sends it as a header.
 
-### LangGraph 1.2.x limitation: two interrupting tools in one `ToolNode`
+## What LangGraph does with a duplicate answer
 
-A second finding, recorded by the same spike, that agent-wait does **not** work around:
+Nothing. A `Command(resume=…)` for a question the thread has already moved past re-runs
+no node and returns the current state — verified on 1.2.11. So the host does not check
+for duplicates, and the library does not offer a way to. The same holds for a *different*
+answer arriving after the first: the first stands.
+
+## LangGraph 1.2.x limitation: two interrupting tools in one `ToolNode`
+
+Recorded by the spike, not worked around:
 
 ```text
 first invoke raised      = [('<id-L>', {'which': 'a', 'x': '1'})]
 after resuming it        = [('<id-L>', {'which': 'b', 'x': '2'})]
 same id for both?        = True
-tasks while parked on b  = [('tools', ['<id-L>'], {})]
 ```
 
-Two tools that both call `interrupt()`, dispatched by one `ToolNode`: only one surfaces
-per invoke ([#6624](https://github.com/langchain-ai/langgraph/issues/6624)), and the
-second carries the *same id* as the first
-([#6626](https://github.com/langchain-ai/langgraph/issues/6626)). That is a different
-question under an identical `dedupe_key` — a consumer would discard it — and the task
-shows `result={}` while genuinely parked, which `pending()` reads as finished.
-
-There is no filter that fixes this, because the ids are genuinely equal. The rule is
-**one `interrupt()` per node**: give each approval-requiring tool its own node.
-`test_known_limitation_two_interrupting_tools_in_one_toolnode_share_an_id` asserts the
-bug is present so that a LangGraph fix fails the test and this section gets removed.
-
-### What else was verified rather than assumed
-
-`packages/langgraph-wait/tests/test_spike_langgraph.py`, which writes
-`reports/langgraph-spike-observations.txt` on every run, pass or fail:
-
-* **`Interrupt.id` is stable** across `invoke(None, config)` re-entry and across
-  resume-from-checkpoint. Everything about republishing rests on this: if ids churned,
-  every republish would look to a consumer like a new question.
-* **Subgraph interrupts** surface on the parent's state against the subgraph node's task,
-  with a stable id. `subgraphs=True` is not needed, and resuming by id works through the
-  parent.
-
-## Identity and deduplication
-
-| | value | stable? |
-|---|---|---|
-| `interrupt_id` | LangGraph's | for as long as the question stands |
-| `event_id` | a fresh ULID | no — one per publish |
-| `dedupe_key` | `"{type}:{interrupt_id}"` | yes |
-
-Consumers deduplicate on `dedupe_key`. This is the mechanism that makes republishing safe,
-and republishing is the only recovery path there is, so it carries weight:
-
-* a crash between the invoke and the announce → the redelivered start message finds the
-  thread parked, `republish()` re-announces it with the same key;
-* an announce adapter that was down → same;
-* an adapter added after the question was asked → `republish()` backfills it.
-
-`event_id` exists for logs and for tracing one specific publish. Deduplicating on it would
-defeat the whole scheme, which is why `SqsAnnounce` sends `dedupe_key` as the FIFO
-`MessageDeduplicationId` and why the README says so twice.
-
-## `expires_at` is anchored to the checkpoint
-
-`PendingInterrupt.asked_at` comes from LangGraph's `created_at` on the state snapshot, and
-`expires_at` is `asked_at + timeout`.
-
-It would be simpler to compute `now + timeout` at publish time, and it would be wrong. The
-same question is republished on every redelivery, so a deadline measured from the publish
-walks forward each time — and a thread retried often enough would never expire, which is
-exactly the failure a timeout exists to prevent.
-`test_the_deadline_does_not_walk_forward_on_republish` holds the line.
-
-## The two guards the host has to write
-
-Neither is in the library, both are in `examples/refund_agent/handler.py`, and both are
-one branch:
-
-**A start for a parked thread must republish, not re-invoke.** Re-invoking with the
-original input makes LangGraph run a fresh turn and ask the question again under a *new*
-interrupt id — a duplicate that no `dedupe_key` can catch, because the ids genuinely
-differ. v0.1 got this from a store of applied message ids; v0.2 gets it from
-`if agent.pending(thread_id)`.
-
-**An answer for a closed question must be dropped.** `pending()` answers this against the
-graph's own state, so a double click, a redelivered message and a second approver an hour
-later are all rejected. It narrows the window rather than closing it: two answers in the
-same instant both see the question open. SQS FIFO with `MessageGroupId = thread_id`
-delivers one message per thread at a time, which closes the rest. Without ordering, a
-conditional write of your own goes here.
-
-`docs/migrating-from-0.1.md` has the full list of what moved across that line.
+Only one surfaces per run (#6624), and the second carries the *same id* as the first
+(#6626): a different question under an identical `dedupe_key`, which a consumer would
+discard. `Interrupt.id` is a hash of the checkpoint namespace alone; the counter that
+routes resume values back to the right `interrupt()` call is not part of it. The rule is
+**one `interrupt()` per node**, or `HumanInTheLoopMiddleware`, which batches. The spike
+asserts the bug is present so a LangGraph fix fails the test and this section gets
+removed.
 
 ## Failure isolation
 
-`CompositeAnnounce` catches everything an adapter raises and logs it. The contract says
-adapters must not raise; the composite enforces it rather than trusting it, because a
-Slack outage must not fail a refund that has already been decided.
+`CompositeAnnounce` catches everything an adapter raises and logs it; `BaseAnnounce` does
+the same for its subclasses' `deliver()`. A Slack outage must not fail a run that has
+already parked. There is no retry: the next redelivery republishes with the same
+`dedupe_key`, and that is the retry.
 
-There is no retry and no record of what got through. Recovery is `republish()`, which is
-idempotent by construction — so a retry loop would only be a faster way to do the same
-thing.
+## What is not here, on purpose
 
-If the graph itself raises, nothing is published. Nothing is known: a run that raised has
-not necessarily parked or unparked anything. There is no half-written record to repair,
-which is the advantage of keeping none.
+No store, no tokens, no leases, no inbound validation, no timers, no `get_state()`.
+Each existed in an earlier version and each put the library on the receive path, where
+every team's own opinions live. The receive path is documented in
+`message-formats.md` as a recommended shape; it is not implemented.

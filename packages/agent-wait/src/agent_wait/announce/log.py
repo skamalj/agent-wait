@@ -33,7 +33,7 @@ class LogAnnounce(BaseAnnounce):
             "event": envelope.type,
             "event_id": envelope.event_id,
             "thread_id": envelope.thread_id,
-            "interrupt_id": envelope.interrupt_id,
+            "question_id": envelope.question_id,
             "allowed_actions": list(envelope.allowed_actions),
             "expires_at": envelope.expires_at,
             "tags": dict(envelope.tags),
@@ -42,6 +42,6 @@ class LogAnnounce(BaseAnnounce):
         if self._out.isEnabledFor(logging.DEBUG):
             self._out.debug(
                 "agent-wait question for %s: %s",
-                envelope.interrupt_id,
+                envelope.question_id,
                 json.dumps(envelope.question, default=str),
             )
