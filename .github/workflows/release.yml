@@ -8,6 +8,13 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish and smoke-test (e.g. 0.2.0). Defaults to the tag name."
+        required: false
+
+env:
+  RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
 
 permissions:
   contents: read
@@ -69,7 +76,7 @@ jobs:
         # The venv comes first: `uv pip` refuses to run without one, and a wait loop
         # that cannot tell "not on the index yet" from "no venv" waits forever.
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_VERSION#v}"
           uv venv .smoke && . .smoke/bin/activate
           for i in $(seq 1 30); do
             if uv pip install --no-cache "agent-wait==$VERSION" "langgraph-wait==$VERSION" "agent-wait-aws==$VERSION"; then break; fi
