@@ -1,47 +1,17 @@
-"""agent-wait-aws: the AWS backends.
+"""agent-wait-aws: announce adapters for AWS.
 
-    from agent_wait_aws import (
-        DynamoWaitStore, SqsAnnounce, SchedulerAnnounce, make_run_handler,
-    )
+Four places a question can land:
 
-Nothing here is a second entry point. The store is a store, the announce adapters tell
-the world, and `make_run_handler` wraps the queue the agent already had. The timeout is
-`SchedulerAnnounce`, which delivers an ordinary answer to that same queue, three days
-late.
+    SnsAnnounce(topic_arn)        # fan out; policy tags become filterable attributes
+    SqsAnnounce(queue_url)        # one consumer, ordered per thread on FIFO
+    EventBridgeAnnounce(bus)      # rules and targets decide who cares
+    DynamoDbAnnounce(table)       # the question *is* a row; query it directly
+
+This package contains nothing but adapters and the CDK stack for the example. There
+is no store, no key provider and no run handler here, because the library keeps no state
+and receives no answers.
 """
 
-from .announce import (
-    EventBridgeAnnounce,
-    SchedulerAnnounce,
-    SnsAnnounce,
-    SqsAnnounce,
-    timeout_message,
-)
-from .entry_point import (
-    entry_point_from_env,
-    lambda_entry_point,
-    queue_arn_from_url,
-    sqs_entry_point,
-)
-from .keys_secrets import SecretsManagerKeyProvider
-from .run_handler import make_run_handler, make_sweep_handler, queue_url_from_arn
-from .store_dynamo import DynamoWaitStore
+from .announce import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, SqsAnnounce
 
-__version__ = "0.1.0"
-
-__all__ = [
-    "DynamoWaitStore",
-    "EventBridgeAnnounce",
-    "SchedulerAnnounce",
-    "SecretsManagerKeyProvider",
-    "SnsAnnounce",
-    "SqsAnnounce",
-    "entry_point_from_env",
-    "lambda_entry_point",
-    "make_run_handler",
-    "make_sweep_handler",
-    "queue_arn_from_url",
-    "queue_url_from_arn",
-    "sqs_entry_point",
-    "timeout_message",
-]
+__all__ = ["DynamoDbAnnounce", "EventBridgeAnnounce", "SnsAnnounce", "SqsAnnounce"]

@@ -1,9 +1,9 @@
 """The four AWS announce adapters, against moto.
 
-Two things get checked for every one of them: that the envelope lands where it should
-with the right routing metadata, and that a broken backend produces a log line rather
-than an exception. The second is the contract (REQUIREMENTS section 8) and is the reason
-a Slack outage cannot fail a refund.
+Two things get checked for every one: that the envelope lands where it should with the
+right routing metadata, and that a broken backend produces a log line rather than an
+exception. The second is the contract, and it is the reason a Slack outage cannot fail a
+refund that has already been decided.
 """
 
 from __future__ import annotations
@@ -13,44 +13,9 @@ from typing import Any
 
 import boto3
 import pytest
-from agent_wait import EntryPoint, WaitEnvelope
-from agent_wait_aws import (
-    EventBridgeAnnounce,
-    SchedulerAnnounce,
-    SnsAnnounce,
-    SqsAnnounce,
-    queue_arn_from_url,
-    timeout_message,
-)
+from agent_wait_aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, SqsAnnounce
 
-from conftest import REGION, make_fifo_queue, received
-
-
-def envelope(**overrides: Any) -> WaitEnvelope:
-    fields: dict[str, Any] = {
-        "type": "wait.created",
-        "event_id": "01JEVENT00000000000000001",
-        "wait_id": "01JWAIT000000000000000001",
-        "thread_id": "order-4471",
-        "question": {"kind": "refund_approval", "amount": 41000},
-        "allowed_actions": ("approve", "reject"),
-        "expires_at": "2099-01-01T00:00:00Z",
-        "token": "aw1.k1.01JWAIT000000000000000001.4102444800.abcdef0123456789.approve+reject.mac",
-        "reply_to": EntryPoint("sqs", "https://sqs.local/q.fifo").to_dict(),
-        "tags": {"approver_group": "finance"},
-    }
-    fields.update(overrides)
-    return WaitEnvelope(**fields)
-
-
-class Broken:
-    """Every call explodes. Stands in for a deleted topic or a revoked permission."""
-
-    def __getattr__(self, name: str) -> Any:
-        def boom(*args: Any, **kwargs: Any) -> Any:
-            raise RuntimeError(f"{name} is unavailable")
-
-        return boom
+from conftest import REGION, Broken, create_approvals_table, envelope, make_fifo_queue, received
 
 
 # ============================================================== SQS
@@ -61,18 +26,37 @@ def test_sqs_announce_sends_the_envelope_to_a_fifo_queue() -> None:
     [body] = received(url)
 
     assert body["type"] == "wait.created"
-    assert body["wait_id"] == "01JWAIT000000000000000001"
+    assert body["interrupt_id"] == "a1b2c3d4e5f60718"
     assert body["question"]["amount"] == 41000
+    assert body["reply_with"]["interrupt_id"] == "a1b2c3d4e5f60718"
 
 
-def test_sqs_announce_groups_by_thread_and_dedupes_on_event_id() -> None:
+def test_sqs_announce_dedupes_a_republished_question() -> None:
+    """The republish path, at the transport.
+
+    Two publishes of the same question carry different `event_id`s -- it is minted per
+    publish -- but the same `dedupe_key`, and that is what goes to SQS. A crash-and-retry
+    inside the deduplication window therefore delivers once.
+    """
+    url, _ = make_fifo_queue("announcements.fifo")
+    adapter = SqsAnnounce(url, region_name=REGION)
+
+    adapter.announce(envelope(event_id="01JEVENT00000000000000001"), "created")
+    adapter.announce(envelope(event_id="01JEVENT00000000000000002"), "created")
+
+    assert len(received(url)) == 1
+
+
+def test_created_and_resumed_are_not_deduplicated_against_each_other() -> None:
+    """Opening and closing the same question are different events; a consumer that never
+    saw the close would show the button forever."""
     url, _ = make_fifo_queue("announcements.fifo")
     adapter = SqsAnnounce(url, region_name=REGION)
 
     adapter.announce(envelope(), "created")
-    adapter.announce(envelope(), "created")  # same event_id: SQS must swallow it
+    adapter.announce(envelope(type="wait.resumed"), "resumed")
 
-    assert len(received(url)) == 1
+    assert len(received(url)) == 2
 
 
 def test_sqs_announce_omits_fifo_parameters_for_a_standard_queue() -> None:
@@ -109,7 +93,7 @@ def test_sns_announce_publishes_with_tags_as_message_attributes() -> None:
     SnsAnnounce(topic_arn, region_name=REGION).announce(envelope(), "created")
 
     [body] = received(url)
-    assert body["wait_id"] == "01JWAIT000000000000000001"
+    assert body["interrupt_id"] == "a1b2c3d4e5f60718"
 
 
 def test_sns_announce_skips_empty_tag_values() -> None:
@@ -142,13 +126,13 @@ def test_eventbridge_announce_uses_the_transition_as_the_detail_type() -> None:
             captured.update(kwargs)
             return {"FailedEntryCount": 0}
 
-    EventBridgeAnnounce("agent-wait-bus", client=Capture()).announce(envelope(), "answered")
+    EventBridgeAnnounce("agent-wait-bus", client=Capture()).announce(envelope(type="wait.resumed"), "resumed")
 
     [entry] = captured["Entries"]
-    assert entry["DetailType"] == "wait.answered"
+    assert entry["DetailType"] == "wait.resumed"
     assert entry["Source"] == "agent-wait"
     assert entry["EventBusName"] == "agent-wait-bus"
-    assert json.loads(entry["Detail"])["wait_id"] == "01JWAIT000000000000000001"
+    assert json.loads(entry["Detail"])["interrupt_id"] == "a1b2c3d4e5f60718"
 
 
 def test_eventbridge_announce_notices_a_failed_entry(caplog: pytest.LogCaptureFixture) -> None:
@@ -168,134 +152,89 @@ def test_eventbridge_announce_swallows_a_broken_client() -> None:
     EventBridgeAnnounce("bus", client=Broken()).announce(envelope(), "created")
 
 
-# ============================================================== Scheduler (the timeout)
-def scheduler_adapter(queue_url: str, queue_arn: str) -> SchedulerAnnounce:
-    boto3.client("scheduler", region_name=REGION).create_schedule_group(Name="agent-wait")
-    return SchedulerAnnounce(
-        "agent-wait",
-        queue_arn=queue_arn,
-        role_arn="arn:aws:iam::123456789012:role/agent-wait-scheduler",
-        queue_url=queue_url,
-        region_name=REGION,
-    )
+# ============================================================== DynamoDB
+def rows(table_name: str) -> list[dict[str, Any]]:
+    return boto3.resource("dynamodb", region_name=REGION).Table(table_name).scan()["Items"]
 
 
-def test_scheduler_arms_a_one_shot_schedule_named_for_the_wait() -> None:
-    url, arn = make_fifo_queue()
-    scheduler_adapter(url, arn).announce(envelope(), "created")
+def test_dynamodb_announce_writes_the_question_as_a_row() -> None:
+    """The point of this adapter: an approvals UI can read the question directly, with no
+    broker and no projection in between."""
+    table = create_approvals_table()
 
-    schedule = boto3.client("scheduler", region_name=REGION).get_schedule(
-        Name="01JWAIT000000000000000001", GroupName="agent-wait"
-    )
+    DynamoDbAnnounce(table, region_name=REGION).announce(envelope(), "created")
 
-    assert schedule["ScheduleExpression"] == "at(2099-01-01T00:00:00)"
-    assert schedule["FlexibleTimeWindow"]["Mode"] == "OFF"
-    assert schedule["ActionAfterCompletion"] == "DELETE"
-    assert schedule["Target"]["Arn"] == arn
-    assert schedule["Target"]["SqsParameters"]["MessageGroupId"] == "order-4471"
-
-
-def test_the_scheduled_payload_is_an_ordinary_answer_envelope() -> None:
-    """The whole design in one assertion: a timeout is not a special event, it is an
-    answer that arrives late at the ordinary entry point."""
-    url, arn = make_fifo_queue()
-    scheduler_adapter(url, arn).announce(envelope(), "created")
-
-    schedule = boto3.client("scheduler", region_name=REGION).get_schedule(
-        Name="01JWAIT000000000000000001", GroupName="agent-wait"
-    )
-    payload = json.loads(schedule["Target"]["Input"])
-
-    assert payload == {
-        "token": envelope().token,
-        "action": "timeout",
-        "answer_id": "timeout:01JWAIT000000000000000001",
-    }
+    [row] = rows(table)
+    assert row["pk"] == "THREAD#order-4471"
+    assert row["sk"] == "WAIT#a1b2c3d4e5f60718"
+    assert row["status"] == "open"
+    assert row["question"] == {"kind": "refund_approval", "amount": 41000}
+    assert row["allowed_actions"] == ["approve", "reject"]
+    assert row["reply_with"]["interrupt_id"] == "a1b2c3d4e5f60718"
+    assert row["default"] == {"action": "reject"}
 
 
-def test_scheduler_does_nothing_for_a_wait_with_no_timeout() -> None:
-    url, arn = make_fifo_queue()
-    scheduler_adapter(url, arn).announce(envelope(expires_at=None), "created")
+def test_open_questions_are_queryable_by_status() -> None:
+    """The query an approvals UI actually runs, and the reason for the GSI. A sweep
+    enforcing timeouts runs the same one with a range condition on `expires_at`."""
+    from boto3.dynamodb.conditions import Key
 
-    assert (
-        boto3.client("scheduler", region_name=REGION).list_schedules(GroupName="agent-wait")["Schedules"]
-        == []
-    )
-
-
-def test_arming_twice_is_harmless() -> None:
-    """A redelivered `created` announce. The schedule is named after the wait, so the
-    second attempt is a ConflictException we shrug at."""
-    url, arn = make_fifo_queue()
-    adapter = scheduler_adapter(url, arn)
-
+    table_name = create_approvals_table()
+    adapter = DynamoDbAnnounce(table_name, region_name=REGION)
     adapter.announce(envelope(), "created")
+    adapter.announce(envelope(interrupt_id="second", thread_id="order-9"), "created")
+
+    table = boto3.resource("dynamodb", region_name=REGION).Table(table_name)
+    open_now = table.query(IndexName="by_status", KeyConditionExpression=Key("status").eq("open"))
+
+    assert open_now["Count"] == 2
+
+
+def test_resumed_closes_the_row_rather_than_deleting_it() -> None:
+    """So there is still something to look at when someone asks why the button stopped
+    working."""
+    table = create_approvals_table()
+    adapter = DynamoDbAnnounce(table, region_name=REGION)
     adapter.announce(envelope(), "created")
 
-    assert (
-        len(boto3.client("scheduler", region_name=REGION).list_schedules(GroupName="agent-wait")["Schedules"])
-        == 1
-    )
+    adapter.announce(envelope(type="wait.resumed"), "resumed")
+
+    [row] = rows(table)
+    assert row["status"] == "closed"
+    assert row["question"] == {"kind": "refund_approval", "amount": 41000}, "still readable"
 
 
-@pytest.mark.parametrize("transition", ["answered", "expired", "resumed", "cancelled"])
-def test_settling_a_wait_deletes_its_schedule(transition: str) -> None:
-    url, arn = make_fifo_queue()
-    adapter = scheduler_adapter(url, arn)
-    adapter.announce(envelope(), "created")
+def test_republishing_the_same_question_overwrites_its_own_row() -> None:
+    """The recovery path again. Two publishes of one question must leave one row, or the
+    approvals UI shows a duplicate that nobody can close."""
+    table = create_approvals_table()
+    adapter = DynamoDbAnnounce(table, region_name=REGION)
 
-    adapter.announce(envelope(type=f"wait.{transition}"), transition)  # type: ignore[arg-type]
+    adapter.announce(envelope(event_id="01JEVENT00000000000000001"), "created")
+    adapter.announce(envelope(event_id="01JEVENT00000000000000002"), "created")
 
-    assert (
-        boto3.client("scheduler", region_name=REGION).list_schedules(GroupName="agent-wait")["Schedules"]
-        == []
-    )
+    assert len(rows(table)) == 1
 
 
-def test_deleting_a_schedule_that_already_fired_is_harmless() -> None:
-    url, arn = make_fifo_queue()
-    adapter = scheduler_adapter(url, arn)
+def test_closing_a_question_this_table_never_saw_leaves_nothing_behind() -> None:
+    """Otherwise a `resumed` from a thread announced before this adapter existed would
+    put a phantom row in the approvals history."""
+    table = create_approvals_table()
 
-    adapter.announce(envelope(), "answered")  # never armed in the first place
+    DynamoDbAnnounce(table, region_name=REGION).announce(envelope(type="wait.resumed"), "resumed")
 
-
-def test_an_overdue_wait_is_delivered_immediately_instead_of_scheduled() -> None:
-    """The sweeper's repair path. EventBridge will not accept a schedule in the past, so
-    the timeout goes straight to the entry point -- still as an ordinary answer."""
-    url, arn = make_fifo_queue()
-    adapter = scheduler_adapter(url, arn)
-
-    adapter.announce(envelope(expires_at="2020-01-01T00:00:00Z"), "created")
-
-    assert (
-        boto3.client("scheduler", region_name=REGION).list_schedules(GroupName="agent-wait")["Schedules"]
-        == []
-    )
-    [body] = received(url)
-    assert body["action"] == "timeout"
-    assert body["answer_id"] == "timeout:01JWAIT000000000000000001"
+    assert rows(table) == []
 
 
-def test_scheduler_swallows_a_broken_client() -> None:
-    SchedulerAnnounce(
-        "g", queue_arn="arn:aws:sqs:ap-south-1:1:q", role_arn="arn:role", client=Broken()
-    ).announce(envelope(), "created")
+def test_dynamodb_announce_swallows_a_broken_table() -> None:
+    DynamoDbAnnounce("gone", table=Broken()).announce(envelope(), "created")
 
 
-def test_scheduler_only_reacts_to_transitions_it_cares_about() -> None:
-    adapter = SchedulerAnnounce(
-        "g", queue_arn="arn:aws:sqs:ap-south-1:1:q", role_arn="arn:role", client=Broken()
-    )
-    assert adapter.supports("created") is True
-    assert adapter.supports("answered") is True
-    assert adapter.supports("cancelled") is True
+def test_a_ttl_is_written_when_one_is_configured() -> None:
+    """An approvals table is a log of questions; most people want it to expire."""
+    table = create_approvals_table()
 
+    DynamoDbAnnounce(table, region_name=REGION, ttl_seconds=86_400).announce(envelope(), "created")
 
-def test_timeout_message_helper_matches_what_is_scheduled() -> None:
-    assert timeout_message(envelope())["action"] == "timeout"
-
-
-# ============================================================== entry point helpers
-def test_queue_arn_from_url() -> None:
-    url, arn = make_fifo_queue()
-    assert queue_arn_from_url(url) == arn
+    [row] = rows(table)
+    assert int(row["ttl"]) > 0

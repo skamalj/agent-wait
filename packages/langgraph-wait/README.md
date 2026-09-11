@@ -1,19 +1,28 @@
 # langgraph-wait
 
-The LangGraph adapter for [agent-wait](https://github.com/skamalj/agent-wait).
+The LangGraph side of [agent-wait](https://pypi.org/project/agent-wait/) — publish a
+LangGraph agent's interrupts so a human can answer them from anywhere.
 
-```python
-from langgraph_wait import ask
-from agent_wait import WaitPolicy
-
-
-def review(state):
-    decision = ask(
-        {"kind": "refund_approval", "order_id": state["order_id"]},
-        policy=WaitPolicy(timeout="P3D", default={"action": "reject"}, allowed_actions=("approve", "reject")),
-    )
-    return {"decision": decision}
+```bash
+pip install langgraph-wait          # pulls in agent-wait
 ```
 
-`ask()` wraps `langgraph.types.interrupt()`; `LangGraphAdapter(graph)` gives the core
-the five things it needs to park and resume that interrupt.
+```python
+from langgraph_wait import ask, LangGraphAdapter, is_answer, resume_command
+```
+
+* **`ask(question, policy)`** — a thin wrapper over `interrupt()`. The node pauses exactly
+  as LangGraph pauses; the policy rides along inside the interrupt value and comes back
+  out in the published envelope. A plain `interrupt(value)` also works, with the default
+  policy.
+* **`LangGraphAdapter(graph)`** — three methods. `pending()` reads what a thread is parked
+  on and filters LangGraph's `tasks[*].interrupts` over-report on `task.result`.
+* **`is_answer(message)`** / **`resume_command(message)`** — pure functions for the host's
+  router. `interrupt_id` present means resume; the `Command` is keyed by interrupt id so
+  parallel interrupts resume independently.
+
+Requires `langgraph >= 1.2`. One `interrupt()` per node — two interrupting tools in one
+`ToolNode` share an id on 1.2.x (langgraph #6626), and this package documents rather
+than hides that.
+
+Full documentation: [skamalj.github.io/agent-wait](https://skamalj.github.io/agent-wait/).

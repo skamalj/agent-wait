@@ -1,134 +1,141 @@
-"""The wire contract: envelopes, ids, hashes, size limits (REQUIREMENTS section 7)."""
+"""The wire contract.
+
+`docs/message-formats.md` promises a specific JSON document. This file is what keeps that
+promise honest: if a field is renamed or dropped, the doc is wrong and a consumer breaks,
+so the shape is asserted key by key rather than by round-tripping a dataclass.
+"""
 
 from __future__ import annotations
 
 import json
 
 import pytest
-from agent_wait import (
-    EntryPoint,
-    FakeClock,
-    InMemoryWaitStore,
-    QuestionTooLarge,
-    WaitEnvelope,
-    binding_hash,
-    canonical_json,
-    idempotency_key,
-    new_ulid,
-)
+from agent_wait import EntryPoint, QuestionTooLarge, WaitPolicy, canonical_json, new_ulid
 from rig import Rig
 
 
 def test_created_envelope_matches_the_documented_shape() -> None:
-    rig = Rig(store=InMemoryWaitStore())
-    wait = rig.park()
+    rig = Rig()
+    rig.adapter.park(
+        "order-4471",
+        "int-1",
+        policy=WaitPolicy(
+            timeout="P3D",
+            default={"action": "reject"},
+            allowed_actions=("approve", "reject"),
+            tags={"approver_group": "finance"},
+        ),
+    )
 
-    envelope = rig.announce.of("created")[0]
+    envelope = rig.agent.envelope_for("order-4471", rig.adapter.pending("order-4471")[0], "created")
     body = json.loads(envelope.to_json())
 
-    assert body["type"] == "wait.created"
-    assert body["wait_id"] == wait.wait_id
-    assert body["thread_id"] == "order-4471"
-    assert body["question"] == {"kind": "refund_approval", "order_id": "order-4471", "amount": 41000}
-    assert body["allowed_actions"] == ["approve", "reject"]
-    assert body["expires_at"] == "2025-10-09T10:53:20Z"
-    assert body["reply_to"] == {
-        "kind": "sqs",
-        "url": "https://sqs.ap-south-1.amazonaws.com/x/agent-runs.fifo",
-    }
-    assert body["tags"] == {"approver_group": "finance"}
-    assert body["token"].startswith("aw1.k1.")
     assert set(body) == {
         "type",
         "event_id",
-        "wait_id",
         "thread_id",
+        "interrupt_id",
         "question",
         "allowed_actions",
         "expires_at",
-        "token",
+        "default",
         "reply_to",
+        "reply_with",
         "correlation",
         "tags",
-        "transition_detail",
+    }, "the documented field set changed; docs/message-formats.md must change with it"
+    assert body["type"] == "wait.created"
+    assert body["thread_id"] == "order-4471"
+    assert body["interrupt_id"] == "int-1"
+    assert body["allowed_actions"] == ["approve", "reject"]
+    assert body["default"] == {"action": "reject"}
+    assert body["tags"] == {"approver_group": "finance"}
+    assert body["reply_to"] == {"kind": "sqs", "url": "https://sqs.example/inbox"}
+
+
+def test_reply_with_is_a_filled_in_stub_not_a_description_of_one() -> None:
+    """The consumer copies it, sets `answer`, and posts it back. That is what guarantees
+    `interrupt_id` is present on the way in -- so the start/resume rule always works."""
+    rig = Rig()
+    rig.adapter.park("order-4471", "int-1")
+
+    envelope = rig.agent.envelope_for("order-4471", rig.adapter.pending("order-4471")[0], "created")
+
+    assert envelope.reply_with == {
+        "thread_id": "order-4471",
+        "interrupt_id": "int-1",
+        "answer": None,
     }
 
 
-def test_envelope_round_trips() -> None:
-    rig = Rig(store=InMemoryWaitStore())
-    rig.park()
-    original = rig.announce.of("created")[0]
+def test_a_wait_with_no_timeout_has_no_expiry() -> None:
+    rig = Rig()
+    rig.adapter.park("t", "int-1", policy=WaitPolicy())
 
-    assert WaitEnvelope.from_dict(json.loads(original.to_json())) == original
+    envelope = rig.agent.envelope_for("t", rig.adapter.pending("t")[0], "created")
 
-
-def test_answered_envelope_carries_the_transition_detail() -> None:
-    rig = Rig(store=InMemoryWaitStore())
-    wait = rig.park()
-    rig.answer(wait, "approve", answer_id="click-9f1", actor="priya@corp")
-
-    envelope = rig.announce.of("answered")[0]
-
-    assert envelope.type == "wait.answered"
-    assert envelope.transition_detail == {
-        "action": "approve",
-        "actor": "priya@corp",
-        "answered_at": "2025-10-09T08:53:20Z",
-    }
+    assert envelope.expires_at is None
 
 
-def test_event_ids_are_unique_per_transition() -> None:
-    rig = Rig(store=InMemoryWaitStore())
-    wait = rig.park()
-    rig.answer(wait, "approve")
+def test_expires_at_is_an_instant_not_a_duration() -> None:
+    """A consumer should never have to parse `P3D`. It gets an absolute time."""
+    rig = Rig()
+    rig.adapter.park("t", "int-1", policy=WaitPolicy(timeout="P3D"))
 
-    ids = [e.event_id for _, e in rig.announce.events]
-    assert len(ids) == len(set(ids)), "consumers dedupe on event_id"
+    envelope = rig.agent.envelope_for("t", rig.adapter.pending("t")[0], "created")
 
-
-def test_correlation_is_null_when_unset() -> None:
-    rig = Rig(store=InMemoryWaitStore())
-    rig.park()
-    assert json.loads(rig.announce.of("created")[0].to_json())["correlation"] is None
+    assert envelope.expires_at == "2025-10-12T08:53:20Z", "asked_at 1_760_000_000 plus three days"
 
 
-def test_entry_point_shapes() -> None:
+def test_dedupe_key_separates_the_two_transitions() -> None:
+    """`created` and `resumed` for the same interrupt are different events; a consumer
+    that deduped on the interrupt id alone would drop the close."""
+    rig = Rig()
+    rig.adapter.park("t", "int-1")
+    interrupt = rig.adapter.pending("t")[0]
+
+    created = rig.agent.envelope_for("t", interrupt, "created")
+    resumed = rig.agent.envelope_for("t", interrupt, "resumed")
+
+    assert created.dedupe_key == "wait.created:int-1"
+    assert resumed.dedupe_key == "wait.resumed:int-1"
+
+
+def test_entry_point_names_its_address_by_kind() -> None:
     assert EntryPoint("sqs", "https://q").to_dict() == {"kind": "sqs", "url": "https://q"}
-    assert EntryPoint("lambda", "arn:x").to_dict() == {"kind": "lambda", "arn": "arn:x"}
-    assert EntryPoint("http", "https://h").to_dict() == {"kind": "http", "url": "https://h"}
+    assert EntryPoint("lambda", "arn:fn").to_dict() == {"kind": "lambda", "arn": "arn:fn"}
+    assert EntryPoint("http", "https://h/hook").to_dict() == {"kind": "http", "url": "https://h/hook"}
 
 
-def test_ulids_are_sortable_and_unique() -> None:
+# ------------------------------------------------------------------ helpers
+def test_a_ulid_is_sortable_by_time() -> None:
+    from agent_wait import FakeClock
+
     clock = FakeClock()
     first = new_ulid(clock)
     clock.advance(1)
     second = new_ulid(clock)
 
     assert len(first) == 26
-    assert first < second, "ULIDs must sort by time"
-    assert len({new_ulid(clock) for _ in range(500)}) == 500
+    assert first < second
 
 
-def test_canonical_json_is_order_independent() -> None:
+def test_canonical_json_is_byte_stable_across_key_order() -> None:
     assert canonical_json({"b": 1, "a": 2}) == canonical_json({"a": 2, "b": 1})
-    assert canonical_json({"a": [1, 2]}) == '{"a":[1,2]}'
 
 
-def test_idempotency_key_and_binding_are_distinct_and_stable() -> None:
-    key = idempotency_key("t", "i", "c")
-    same = idempotency_key("t", "i", "c")
-    other = idempotency_key("t", "i", "c2")
-    binding = binding_hash({"q": 1}, "i", "c")
+def test_an_oversized_question_is_refused_where_it_is_asked() -> None:
+    """Not at publish time. A question too big for SNS would otherwise park the graph on
+    something nobody can ever be told about."""
+    from agent_wait import check_question_size
 
-    assert key == same
-    assert key != other
-    assert key != binding
-    assert binding != binding_hash({"q": 2}, "i", "c"), "the binding must track the question"
+    with pytest.raises(QuestionTooLarge, match="204800"):
+        check_question_size({"blob": "x" * 300_000})
 
 
-def test_a_question_over_200kb_fails_loudly() -> None:
-    """Section 16.6: no silent truncation, no blob-by-reference in v0.1."""
-    rig = Rig(store=InMemoryWaitStore())
+def test_iso_passes_none_through() -> None:
+    """A wait with no timeout has no expiry, and `None` has to survive the formatting."""
+    from agent_wait import iso
 
-    with pytest.raises(QuestionTooLarge, match="inline limit"):
-        rig.park(question={"blob": "x" * (200 * 1024)})
+    assert iso(None) is None
+    assert iso(1_760_000_000.0) == "2025-10-09T08:53:20Z"

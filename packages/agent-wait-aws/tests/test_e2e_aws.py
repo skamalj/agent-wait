@@ -1,13 +1,13 @@
 """The end-to-end level, against a real deployed stack.
 
-Opt in (REQUIREMENTS section 12):
+Opt in:
 
     AGENT_WAIT_E2E=1 AGENT_WAIT_E2E_STACK=agent-wait-poc-ks uv run pytest -m e2e
 
-Skipped by default and in CI, because it needs credentials, a deployed stack, and about
-five minutes of real waiting for a real scheduler to fire. The same scenarios can be run
+Skipped by default and in CI, because it needs credentials, a deployed stack, and several
+minutes of real waiting for a real deadline to pass. The same scenarios can be run
 directly with `examples/refund_agent/demo_scenarios.py`, which is what the deploy script
-does and what produced the evidence in `reports/`.
+does and what produces the evidence in `reports/`.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def journal():  # type: ignore[no-untyped-def]
 
 
 @skip_unless_enabled
-def test_scenario_a_crash_before_register_and_double_click(deployment, journal) -> None:  # type: ignore[no-untyped-def]
+def test_scenario_a_the_happy_path_and_every_stale_answer(deployment, journal) -> None:  # type: ignore[no-untyped-def]
     from refund_agent.demo_scenarios import scenario_a
 
     deployment.drain_announcements()
@@ -56,7 +56,7 @@ def test_scenario_a_crash_before_register_and_double_click(deployment, journal) 
 
 
 @skip_unless_enabled
-def test_scenario_b_timeout(deployment, journal) -> None:  # type: ignore[no-untyped-def]
+def test_scenario_b_the_consumer_enforces_the_timeout(deployment, journal) -> None:  # type: ignore[no-untyped-def]
     from refund_agent.demo_scenarios import scenario_b
 
     deployment.drain_announcements()
@@ -65,7 +65,7 @@ def test_scenario_b_timeout(deployment, journal) -> None:  # type: ignore[no-unt
 
 
 @skip_unless_enabled
-def test_scenario_c_crash_after_resume_before_ack(deployment, journal) -> None:  # type: ignore[no-untyped-def]
+def test_scenario_c_a_redelivered_answer_does_not_refund_twice(deployment, journal) -> None:  # type: ignore[no-untyped-def]
     from refund_agent.demo_scenarios import scenario_c
 
     deployment.drain_announcements()
@@ -74,7 +74,7 @@ def test_scenario_c_crash_after_resume_before_ack(deployment, journal) -> None: 
 
 
 @skip_unless_enabled
-def test_scenario_d_sweeper(deployment, journal) -> None:  # type: ignore[no-untyped-def]
+def test_scenario_d_a_lost_announce_is_repaired_by_the_redelivery(deployment, journal) -> None:  # type: ignore[no-untyped-def]
     from refund_agent.demo_scenarios import scenario_d
 
     deployment.drain_announcements()

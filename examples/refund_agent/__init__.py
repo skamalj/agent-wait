@@ -1,1 +1,1 @@
-"""The example refund-approval agent (REQUIREMENTS section 13)."""
+"""The example refund-approval agent: a graph, a router, and the deployed scenarios."""

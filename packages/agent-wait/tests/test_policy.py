@@ -1,4 +1,10 @@
-"""WaitPolicy: duration parsing and JSON round-tripping."""
+"""WaitPolicy: duration parsing and JSON round-tripping.
+
+Every field is advisory since v0.2 -- the library publishes the policy and enforces none
+of it. What still has to hold is that a malformed policy fails *at the interrupt site*,
+in the graph, on the line that got it wrong, rather than reaching a consumer as an
+`expires_at` nobody can parse.
+"""
 
 from __future__ import annotations
 
@@ -30,8 +36,8 @@ def test_parse_duration(value: object, seconds: float | None) -> None:
     ["P1M", "P1Y", "3 days", "", "P", "PT", "-PT1H", 0, -5, True],
 )
 def test_unparseable_durations_fail_loudly(value: object) -> None:
-    """Months and years are refused on purpose: a wait's expiry has to be a definite
-    instant we can hand to a scheduler."""
+    """Months and years are refused on purpose: `expires_at` promises a definite
+    instant, and "one month from now" is not one."""
     with pytest.raises(PolicyError):
         parse_duration(value)  # type: ignore[arg-type]
 
@@ -59,33 +65,43 @@ def test_round_trip_through_json_shape() -> None:
 def test_defaults() -> None:
     policy = WaitPolicy()
     assert policy.allowed_actions == ("resume",)
-    assert policy.on_timeout == "resume_default"
     assert policy.timeout_seconds is None
+    assert policy.default is None
     assert WaitPolicy.from_dict(None) == policy
     assert WaitPolicy.from_dict({}) == policy
 
 
-def test_timeout_is_always_permitted_but_may_not_be_declared() -> None:
-    policy = WaitPolicy(allowed_actions=("approve",))
-    assert policy.permits("approve") is True
-    assert policy.permits("reject") is False
-    assert policy.permits("timeout") is True, "the scheduler's action is always allowed"
-
-    with pytest.raises(PolicyError, match="reserved"):
-        WaitPolicy(allowed_actions=("approve", "timeout"))
-
-
 def test_empty_allowed_actions_is_refused() -> None:
+    """It would publish a question with no answers, which is a question nobody can
+    close."""
     with pytest.raises(PolicyError):
         WaitPolicy(allowed_actions=())
 
 
-def test_bad_on_timeout_is_refused() -> None:
-    with pytest.raises(PolicyError):
-        WaitPolicy(on_timeout="explode")  # type: ignore[arg-type]
+def test_an_unknown_action_is_not_refused_here() -> None:
+    """The counterpart to the above, and the v0.2 trade in one test.
+
+    `allowed_actions` is published so a UI knows which buttons to draw. Nothing in this
+    library checks an answer against it, because no answer ever reaches this library --
+    whoever owns the entry point owns that check now. A test asserting a rejection here
+    would be asserting a guarantee we no longer make.
+    """
+    policy = WaitPolicy(allowed_actions=("approve",))
+
+    assert policy.to_dict()["allowed_actions"] == ["approve"]
 
 
-def test_correlation_key() -> None:
-    assert WaitPolicy().correlation_key() is None
-    assert WaitPolicy(correlation={"provider": "p", "id": "77"}).correlation_key() == "p:77"
-    assert WaitPolicy(correlation={"provider": "p"}).correlation_key() is None
+def test_a_policy_survives_the_trip_through_an_interrupt_value() -> None:
+    """The policy rides inside the interrupt payload, so JSON is the only channel it
+    has. A field that does not round-trip is a field the consumer never sees."""
+    import json
+
+    policy = WaitPolicy(timeout="P3D", default={"action": "reject"}, tags={"team": "finance"})
+
+    assert WaitPolicy.from_dict(json.loads(json.dumps(policy.to_dict()))) == policy
+
+
+def test_a_duration_that_parses_to_zero_is_still_refused() -> None:
+    """`PT0S` matches the grammar but means "already expired", which no author intends."""
+    with pytest.raises(PolicyError, match="positive"):
+        parse_duration("PT0S")

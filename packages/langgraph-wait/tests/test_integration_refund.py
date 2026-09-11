@@ -1,11 +1,12 @@
-"""The four scenarios of REQUIREMENTS section 13, against a real LangGraph graph.
+"""The refund agent end to end: a real graph, a real checkpointer, real interrupts.
 
-Everything here is real except the cloud: a real graph, a real checkpointer, real
-interrupts, real tokens, the real `dispatch()`/`register()` pair. Only SQS and Lambda are
-replaced, by `LocalAgent`, which crashes exactly where the scenarios say it does.
+Only the cloud is faked. What these tests are really checking is the v0.2 bargain -- that
+the library publishes correctly, and that the guarantees it handed back to the caller can
+in fact be met by a caller doing something reasonable. Where a v0.1 test asserted "the
+library refused this", the v0.2 test asserts "the router refused this, using `pending()`",
+and says so.
 
-The assertion that matters in every one of them is the same:
-`PAYMENTS_CALLED == ["order-4471"]`. Once. Not twice, not zero.
+`PAYMENTS_CALLED` is the point of all of it.
 """
 
 from __future__ import annotations
@@ -15,15 +16,13 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from agent_wait import FailingAnnounce, Ignore, InMemoryWaitStore, SqliteWaitStore
-from driver import Died, LocalAgent
+from driver import Died, LocalHost
 from langgraph.checkpoint.memory import InMemorySaver
 from refund_agent.graph import PAYMENTS_CALLED, build_graph, reset_side_effects
 
 START_MESSAGE = {
     "thread_id": "order-4471",
     "input": {"order_id": "order-4471", "amount": 41000},
-    "message_id": "evt-return-4471",
 }
 
 
@@ -41,241 +40,231 @@ def sqlite_saver() -> Any:
 
 
 @pytest.fixture(params=["memory", "sqlite"])
-def agent(request: pytest.FixtureRequest) -> LocalAgent:
-    """The whole suite runs twice: once entirely in memory, once with a real SQLite
-    checkpointer and a real SQLite wait store, which is the closest local analogue of
-    the deployed shape."""
-    if request.param == "memory":
-        return LocalAgent(graph=build_graph(InMemorySaver()), store=InMemoryWaitStore())
-    return LocalAgent(graph=build_graph(sqlite_saver()), store=SqliteWaitStore(":memory:"))
+def host(request: pytest.FixtureRequest) -> LocalHost:
+    """Twice: once entirely in memory, once against a real SQLite checkpointer, which is
+    the closest local analogue of a deployed checkpointer."""
+    saver = InMemorySaver() if request.param == "memory" else sqlite_saver()
+    return LocalHost(build_graph(saver))
 
 
 # ============================================================== the happy path
-def test_a_small_refund_never_asks_anyone(agent: LocalAgent) -> None:
-    """The wait machinery costs nothing when the graph does not pause."""
-    result = agent.deliver(
-        {"thread_id": "order-1", "input": {"order_id": "order-1", "amount": 900}, "message_id": "m"}
-    )
+def test_a_small_refund_never_asks_anyone(host: LocalHost) -> None:
+    """The publisher costs nothing when the graph does not pause."""
+    host.deliver({"thread_id": "order-1", "input": {"order_id": "order-1", "amount": 900}})
 
-    assert result.envelopes == []
+    assert host.announce.events == []
     assert PAYMENTS_CALLED == ["order-1"]
-    assert agent.announce.events == []
 
 
-def test_a_large_refund_parks_and_announces(agent: LocalAgent) -> None:
-    result = agent.deliver(START_MESSAGE)
+def test_a_large_refund_parks_and_publishes(host: LocalHost) -> None:
+    host.deliver(START_MESSAGE)
 
-    assert len(result.envelopes) == 1
-    envelope = result.envelopes[0]
+    (envelope,) = host.open_envelopes()
     assert envelope.type == "wait.created"
     assert envelope.question["kind"] == "refund_approval"
     assert envelope.question["amount"] == 41000
     assert envelope.allowed_actions == ("approve", "reject")
     assert envelope.tags == {"approver_group": "finance"}
-    assert envelope.token.startswith("aw1.")
+    assert envelope.expires_at is not None
     assert PAYMENTS_CALLED == [], "nothing irreversible before a human answers"
 
 
-def test_approval_resumes_the_graph_and_refunds_once(agent: LocalAgent) -> None:
-    agent.deliver(START_MESSAGE)
+def test_the_envelope_carries_everything_needed_to_answer_it(host: LocalHost) -> None:
+    """A consumer should never need a second lookup, and never need to construct the
+    reply itself."""
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
 
-    agent.deliver(agent.answer("approve", answer_id="click-9f1"))
+    assert envelope.reply_to == {"kind": "sqs", "url": "https://sqs.example/agent-inbox"}
+    assert envelope.reply_with["thread_id"] == "order-4471"
+    assert envelope.reply_with["interrupt_id"] == envelope.interrupt_id
+    assert "answer" in envelope.reply_with
+
+
+def test_approval_resumes_the_graph_and_refunds_once(host: LocalHost) -> None:
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
+
+    host.deliver(host.reply(envelope, {"action": "approve", "note": "within budget"}))
 
     assert PAYMENTS_CALLED == ["order-4471"]
-    assert agent.wait().status == "resumed"
-    assert agent.graph.get_state(agent.adapter.config_for("order-4471")).values["status"] == "refunded"
+    assert host.agent.pending("order-4471") == []
+    assert host.announce.transitions() == ["created", "resumed"], "the ticket was closed"
 
 
-def test_rejection_skips_the_refund(agent: LocalAgent) -> None:
-    agent.deliver(START_MESSAGE)
+def test_the_answer_reaches_the_node_verbatim(host: LocalHost) -> None:
+    """No merging, no injected action field. What the consumer sent is what `ask()`
+    returns -- which is the simplification that removed a whole class of v0.1 rule."""
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
 
-    agent.deliver(agent.answer("reject", answer_id="click-9f1", payload={"reason": "duplicate claim"}))
+    host.deliver(host.reply(envelope, {"action": "approve", "note": "within budget"}))
 
-    assert PAYMENTS_CALLED == []
-    assert agent.graph.get_state(agent.adapter.config_for("order-4471")).values["status"] == "rejected"
-
-
-# ============================================================== scenario A
-def test_scenario_a_crash_before_register_then_double_click(agent: LocalAgent) -> None:
-    """Crash after the checkpoint but before `register()`; SQS redelivers; the wait is
-    created once. Then: the same click twice, a different decision, a forged token, and
-    a timer that arrives too late. One refund."""
-    with pytest.raises(Died):
-        agent.deliver(START_MESSAGE, die_after_invoke=True)
-    assert agent.store.find(thread_id="order-4471") == [], "the crash was before any write"
-
-    # -- the redelivery
-    result = agent.deliver(START_MESSAGE)
-    assert len(result.envelopes) == 1
-    assert len(agent.store.find(thread_id="order-4471")) == 1
-    assert len(agent.envelopes("created")) == 1
-
-    # -- a third delivery must change nothing
-    agent.deliver(START_MESSAGE)
-    assert len(agent.store.find(thread_id="order-4471")) == 1
-    assert len(agent.envelopes("created")) == 1
-
-    # -- approve
-    approved = agent.deliver(agent.answer("approve", answer_id="click-9f1"))
-    assert not isinstance(approved, Ignore)
-    assert PAYMENTS_CALLED == ["order-4471"]
-
-    # -- the same click again: success, not a conflict
-    again = agent.deliver(agent.answer("approve", answer_id="click-9f1"))
-    assert isinstance(again, Ignore) and again.reason == "duplicate"
-
-    # -- a different decision arriving late
-    reject = agent.deliver(agent.answer("reject", answer_id="click-different"))
-    assert isinstance(reject, Ignore) and reject.reason == "already_answered"
-
-    # -- a tampered token
-    token = agent.token()
-    forged = token[:-1] + ("A" if token[-1] != "A" else "B")
-    tampered = agent.deliver(agent.answer("approve", answer_id="evil", token=forged))
-    assert isinstance(tampered, Ignore) and tampered.reason == "token_invalid"
-
-    # -- the timer, three days late
-    agent.clock.advance(3 * 86400)
-    late = agent.deliver(agent.timeout_message())
-    assert isinstance(late, Ignore) and late.reason == "already_answered"
-
-    assert PAYMENTS_CALLED == ["order-4471"], "exactly one refund, after all of that"
+    state = host.agent.adapter.graph.get_state(host.adapter.config_for("order-4471"))
+    assert state.values["decision"] == {"action": "approve", "note": "within budget"}
 
 
-# ============================================================== scenario B
-def test_scenario_b_timeout_applies_the_default(agent: LocalAgent) -> None:
-    """Nobody answers. The schedule fires, delivers `action: timeout` to the agent's own
-    entry point, and the declared default is applied."""
-    agent.deliver(START_MESSAGE)
-    agent.clock.advance(3 * 86400)
+def test_rejection_skips_the_refund(host: LocalHost) -> None:
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
 
-    agent.deliver(agent.timeout_message())
+    host.deliver(host.reply(envelope, {"action": "reject", "reason": "duplicate claim"}))
 
     assert PAYMENTS_CALLED == []
-    state = agent.graph.get_state(agent.adapter.config_for("order-4471"))
+    state = host.agent.adapter.graph.get_state(host.adapter.config_for("order-4471"))
     assert state.values["status"] == "rejected"
-    # Section 18.1 as amended: the graph sees the default its author wrote.
-    assert state.values["decision"] == {
-        "action": "reject",
-        "reason": "no response within P3D",
-    }
-    # The record, meanwhile, says a timer did it.
-    assert agent.wait().action == "timeout"
-    assert agent.wait().actor == "system:timer"
-    assert agent.wait().status == "resumed"
-    assert "expired" in agent.announce.transitions()
 
-    late = agent.deliver(agent.answer("approve", answer_id="click-too-late"))
-    assert isinstance(late, Ignore) and late.reason == "already_answered"
+
+# ============================================== the crash between run and announce
+def test_a_crash_before_the_announce_is_repaired_by_the_redelivery(host: LocalHost) -> None:
+    """The failure v0.1 needed a store and a sweeper for.
+
+    The graph parked, the process died before anything was published, and there is now no
+    record anywhere that a question exists. What repairs it is SQS redelivering the start
+    message: the router sees the thread is already parked, and republishes rather than
+    starting a fresh turn -- same interrupt id, same `dedupe_key`, so a consumer that
+    somehow did see the first one discards the repeat.
+
+    Re-invoking with the original input instead would ask the question a *second* time
+    under a new id, which is a duplicate no consumer could detect. That is the rule v0.1
+    got from its store of applied message ids, and the reason `pending()` is public.
+    """
+    with pytest.raises(Died):
+        host.deliver(START_MESSAGE, die_after_invoke=True)
+    assert host.announce.events == [], "nobody was told"
+    assert host.agent.pending("order-4471"), "but the graph really is parked"
+
+    host.deliver(START_MESSAGE)
+
+    (envelope,) = host.open_envelopes()
+    assert envelope.dedupe_key == f"wait.created:{host.agent.pending('order-4471')[0].interrupt_id}"
+
+    # And a third delivery republishes the same key rather than opening a second question.
+    host.deliver(START_MESSAGE)
+    keys = {e.dedupe_key for e in host.open_envelopes()}
+    assert len(keys) == 1, "three deliveries, one question"
+    assert len(host.open_envelopes()) == 2, "published twice, deduplicable on the key"
     assert PAYMENTS_CALLED == []
 
 
-def test_scenario_b_a_second_timer_firing_is_harmless(agent: LocalAgent) -> None:
-    agent.deliver(START_MESSAGE)
-    agent.clock.advance(3 * 86400)
-    agent.deliver(agent.timeout_message())
+def test_a_crash_after_the_refund_does_not_refund_twice(host: LocalHost) -> None:
+    """The side effect happened and the host died before acking. SQS redelivers the
+    approval. `pending()` is what stops it: the thread is no longer parked on that
+    interrupt, so the router drops the message."""
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
+    approval = host.reply(envelope, {"action": "approve"})
 
-    repeat = agent.deliver(agent.timeout_message())
-
-    assert isinstance(repeat, Ignore) and repeat.reason == "duplicate"
-
-
-# ============================================================== scenario C
-def test_scenario_c_crash_after_resume_before_ack(agent: LocalAgent) -> None:
-    """The refund happened and then the handler died before acking. SQS redelivers the
-    approval. The refund must not happen again."""
-    agent.deliver(START_MESSAGE)
-
-    approval = agent.answer("approve", answer_id="click-9f1")
     with pytest.raises(Died):
-        agent.deliver(approval, die_after_invoke=True)
+        host.deliver(approval, die_after_invoke=True)
     assert PAYMENTS_CALLED == ["order-4471"], "the side effect did happen"
 
-    redelivered = agent.deliver(approval)
-
-    assert isinstance(redelivered, Ignore)
-    assert redelivered.reason == "duplicate"
+    assert host.deliver(approval) == "ignored: already closed"
     assert PAYMENTS_CALLED == ["order-4471"], "and did not happen twice"
 
 
-def test_scenario_c_register_settles_the_wait_on_the_next_run(agent: LocalAgent) -> None:
-    """The crash left the wait `answered` rather than `resumed`. The next message on the
-    thread finalises it -- the bookkeeping catches up on its own."""
-    agent.deliver(START_MESSAGE)
-    approval = agent.answer("approve", answer_id="click-9f1")
-    with pytest.raises(Died):
-        agent.deliver(approval, die_after_invoke=True)
-    assert agent.wait().status == "answered"
+# ====================================================== the caller's own guards
+def test_the_same_click_twice_is_dropped_by_the_router(host: LocalHost) -> None:
+    """v0.1 called this `duplicate` and refused it in `dispatch()`. In v0.2 it is the
+    router's `is_still_open()` check -- same outcome, different owner."""
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
+    approval = host.reply(envelope, {"action": "approve"})
 
-    agent.deliver(approval)
-    agent.runtime.register([], agent.adapter.config_for("order-4471"), "order-4471")
+    host.deliver(approval)
+    assert host.deliver(approval) == "ignored: already closed"
 
-    assert agent.wait().status == "resumed"
-    assert "resumed" in agent.announce.transitions()
-
-
-# ============================================================== scenario D
-def test_scenario_d_sweeper_completes_a_half_finished_register(agent: LocalAgent) -> None:
-    """The process died between the DynamoDB write and the announce, so nobody knows the
-    wait exists and no timer will fire. The sweeper repairs it."""
-    healthy = agent.announce
-    agent.runtime.announce.adapters = [FailingAnnounce()]
-
-    agent.deliver(START_MESSAGE)
-    wait = agent.store.find(thread_id="order-4471")[0]
-    assert wait.notified_at is None, "an unannounced wait is invisible to the world"
-
-    agent.runtime.announce.adapters = [healthy]
-    counts = agent.runtime.sweep()
-
-    assert counts["announced"] == 1
-    assert len(healthy.of("created")) == 1
-    assert agent.store.get(wait.wait_id).notified_at is not None
-
-    # and it is answerable, which is the whole point of repairing it
-    agent.deliver(agent.answer("approve", answer_id="click-9f1"))
     assert PAYMENTS_CALLED == ["order-4471"]
 
 
+def test_a_second_different_decision_arriving_late_is_dropped(host: LocalHost) -> None:
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
+
+    host.deliver(host.reply(envelope, {"action": "approve"}))
+    late = host.deliver(host.reply(envelope, {"action": "reject"}))
+
+    assert late == "ignored: already closed"
+    assert PAYMENTS_CALLED == ["order-4471"]
+
+
+def test_an_answer_for_an_unknown_interrupt_is_dropped(host: LocalHost) -> None:
+    host.deliver(START_MESSAGE)
+
+    outcome = host.deliver(
+        {"thread_id": "order-4471", "interrupt_id": "not-a-real-id", "answer": {"action": "approve"}}
+    )
+
+    assert outcome == "ignored: already closed"
+    assert PAYMENTS_CALLED == []
+
+
+# ============================================================== the timeout
+def test_the_timeout_is_the_consumers_to_enforce(host: LocalHost) -> None:
+    """v0.2 publishes the deadline and the default, and does nothing else.
+
+    This is what "the world enforces it" looks like in practice: eleven lines, and they
+    live wherever you already run scheduled work. The graph gets exactly the default its
+    author declared, because nothing in between rewrote it.
+    """
+    host.deliver(START_MESSAGE)
+    (envelope,) = host.open_envelopes()
+
+    def sweep_expired(now: str) -> None:
+        for open_envelope in host.open_envelopes():
+            due = open_envelope.expires_at and open_envelope.expires_at <= now
+            if due and host.is_still_open(open_envelope.thread_id, open_envelope.interrupt_id):
+                host.deliver(host.reply(open_envelope, open_envelope.default))
+
+    sweep_expired("2000-01-01T00:00:00Z")
+    assert PAYMENTS_CALLED == [], "not due yet, and nothing happened"
+
+    sweep_expired("2999-01-01T00:00:00Z")
+
+    state = host.agent.adapter.graph.get_state(host.adapter.config_for("order-4471"))
+    assert state.values["decision"] == {
+        "action": "reject",
+        "reason": "no response within P3D",
+    }, "the author's default, verbatim"
+    assert PAYMENTS_CALLED == []
+    assert envelope.expires_at is not None
+
+
 # ============================================================== parallel and subgraph
-def test_two_parallel_approvals_resume_independently(agent: LocalAgent) -> None:
-    """Rule 11, end to end: two waits, two tokens, and answering one leaves the other
-    exactly where it was."""
+def test_two_parallel_approvals_resume_independently() -> None:
+    """Two questions, two envelopes, and answering one leaves the other exactly where it
+    was -- including still being published as open."""
     from parallel_graphs import build_parallel_graph
 
-    parallel = LocalAgent(graph=build_parallel_graph(), store=InMemoryWaitStore())
-    result = parallel.deliver({"thread_id": "batch-1", "input": {}, "message_id": "m"})
-    assert len(result.envelopes) == 2
+    host = LocalHost(build_parallel_graph())
+    host.deliver({"thread_id": "batch-1", "input": {}})
+    assert len(host.open_envelopes()) == 2
 
-    first, second = result.envelopes
-    outcome = parallel.deliver(parallel.answer("approve", answer_id="click-a", index=0))
+    first, second = host.open_envelopes()
+    host.deliver(host.reply(first, {"action": "approve", "note": "within budget"}))
 
-    assert not isinstance(outcome, Ignore)
-    assert parallel.store.get(first.wait_id).status in ("answered", "resumed")
-    still_open = parallel.store.get(second.wait_id)
-    assert still_open.status == "pending"
-    assert still_open.notified_at is not None
+    assert host.announce.of("resumed")[0].interrupt_id == first.interrupt_id
+    assert host.is_still_open("batch-1", second.interrupt_id)
 
-    parallel.deliver(parallel.answer("reject", answer_id="click-b", index=1))
-    assert parallel.graph.get_state(parallel.adapter.config_for("batch-1")).values == {
+    host.deliver(host.reply(second, {"action": "reject", "note": "within budget"}))
+    values = host.agent.adapter.graph.get_state(host.adapter.config_for("batch-1")).values
+    assert values == {
         "a": {"action": "approve", "note": "within budget"},
         "b": {"action": "reject", "note": "within budget"},
     }
 
 
-def test_a_subgraph_interrupt_parks_and_resumes(agent: LocalAgent) -> None:
+def test_a_subgraph_interrupt_parks_and_resumes() -> None:
     from parallel_graphs import build_subgraph_graph
 
-    nested = LocalAgent(graph=build_subgraph_graph(), store=InMemoryWaitStore())
-    result = nested.deliver({"thread_id": "nested-1", "input": {}, "message_id": "m"})
+    host = LocalHost(build_subgraph_graph())
+    host.deliver({"thread_id": "nested-1", "input": {}})
 
-    assert len(result.envelopes) == 1
-    assert result.envelopes[0].question == {"kind": "inner_approval"}
+    (envelope,) = host.open_envelopes()
+    assert envelope.question == {"kind": "inner_approval"}
 
-    nested.deliver(nested.answer("approve", answer_id="click-1"))
+    host.deliver(host.reply(envelope, {"action": "approve", "note": "within budget"}))
 
-    assert nested.store.get(result.envelopes[0].wait_id).status == "resumed"
-    assert nested.graph.get_state(nested.adapter.config_for("nested-1")).values["v"] == {
-        "action": "approve",
-        "note": "within budget",
-    }
+    assert host.agent.pending("nested-1") == []
+    values = host.agent.adapter.graph.get_state(host.adapter.config_for("nested-1")).values
+    assert values["v"] == {"action": "approve", "note": "within budget"}

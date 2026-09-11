@@ -8,7 +8,7 @@ use is your business, exactly as it is with plain LangGraph.
 But the example has to have *some* durable saver, because the whole point of the project
 is resuming on a machine that was not running when the question was asked. `InMemorySaver`
 would lose the thread the moment the Lambda container went away, and the four scenarios
-in REQUIREMENTS section 13 would all be testing nothing. The published options were a
+against a real deployment would all be testing nothing. The published options were a
 stale third-party 0.1.0 and one that requires Bedrock Session Management, so this is
 about a hundred lines against LangGraph's documented `BaseCheckpointSaver` interface
 instead.

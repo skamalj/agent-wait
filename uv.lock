@@ -12,12 +12,12 @@ members = [
 
 [[package]]
 name = "agent-wait"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/agent-wait" }
 
 [[package]]
 name = "agent-wait-aws"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/agent-wait-aws" }
 dependencies = [
     { name = "agent-wait" },
@@ -32,7 +32,7 @@ requires-dist = [
 
 [[package]]
 name = "agent-wait-workspace"
-version = "0.1.0"
+version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "agent-wait" },
@@ -933,7 +933,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-wait"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/langgraph-wait" }
 dependencies = [
     { name = "agent-wait" },

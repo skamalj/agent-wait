@@ -1,16 +1,31 @@
 [project]
 name = "agent-wait"
-version = "0.1.0"
-description = "Durable waits for agent frameworks: park an interrupt, answer it days later, resume anywhere."
+version = "0.2.0"
+description = "Publish a LangGraph agent's interrupts to the outside world so a human can answer them -- from a queue, a Lambda, anywhere the process does not stick around."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
-authors = [{ name = "Kamaljeet Singh" }]
-keywords = ["agents", "human-in-the-loop", "durable", "interrupt", "workflow"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kamaljeet Singh", email = "skamalj@gmail.com" }]
+keywords = ["agents", "langgraph", "human-in-the-loop", "interrupt", "approval", "serverless", "durable"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/skamalj/agent-wait"
+Homepage = "https://skamalj.github.io/agent-wait/"
+Documentation = "https://skamalj.github.io/agent-wait/"
+Source = "https://github.com/skamalj/agent-wait"
+Issues = "https://github.com/skamalj/agent-wait/issues"
+Changelog = "https://github.com/skamalj/agent-wait/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
@@ -18,3 +33,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_wait"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agent_wait", "README.md", "LICENSE"]

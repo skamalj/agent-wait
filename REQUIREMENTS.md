@@ -561,3 +561,108 @@ would mean reasoning about a policy that may belong to a different question; che
 before the store read is impossible, since there is nothing to compare against yet.
 
 Rule 9 in §10 now cites this step.
+
+---
+
+## 19. v0.2 — the simplification (2026-09-10)
+
+Directed by the owner after v0.1 shipped. This section supersedes §1–§13 wherever they
+conflict; §14–§18 describe v0.1 and are kept as the record of what was built and why.
+
+### 19.1 The finding
+
+v0.1 met its contract, and the contract was too big. The owner's judgement, arrived at by
+counting what a caller has to know:
+
+> "This is built too complex … we need to simplify even if it means removing feature. Let's
+> say we do not handle the incoming messages, let the user handle it how to call
+> invoke/resume — we only externalize the interrupt via ask and register."
+
+Two arguments carried it, and both are worth preserving because they are the test any
+future addition should be held to.
+
+**The naming problem was a design problem.** `dispatch()` was hard to name because it did
+not do one thing: it verified a token, decided a race, wrote to the store, announced, and
+*then* handed back an instruction for the caller to execute. `register()` was hard to name
+because announcing was only one of its four jobs. Neither name was fixable without fixing
+the split behind it.
+
+**The library's value was in one half.** Externalising the interrupt — publishing the
+question with everything needed to answer it — is the part that is hard to get right and
+that every consumer needs. Receiving the answer is the part every team already has an
+opinion about, and the part that dragged in tokens, a store, leases, a scheduler and a
+sweeper.
+
+### 19.2 What v0.2 is
+
+One call, plus `ask()`, plus one schema.
+
+```python
+agent = WaitPublisher(adapter, announce=[...], reply_to=EntryPoint("sqs", url))
+agent.invoke(value, thread_id)
+```
+
+`invoke()` runs the graph and publishes what changed, by diffing the framework's own
+pending set before and after. `pending()` reads that set; `republish()` re-announces it.
+`ask()` is unchanged. `AnnounceAdapter` is unchanged.
+
+Two transitions exist — `wait.created` and `wait.resumed` — because a wait has exactly two
+observable states once there is no record of one.
+
+### 19.3 What was removed, and what the caller inherits
+
+Removed: `dispatch()` and its eleven `Ignore` reasons; tokens, key rotation and the binding
+hash; the wait store in all three implementations, with leases, idempotency keys and parked
+answers; the sweeper; `SchedulerAnnounce` and the whole timeout path; `make_run_handler`.
+
+`timeout`, `default` and `allowed_actions` remain on `WaitPolicy` and are published —
+`timeout` resolved to an absolute `expires_at`. **Nothing in the library acts on them.** The
+world is told the rules; the world enforces them.
+
+The caller inherits four things, listed in full in `docs/migrating-from-0.1.md`: enforcing
+the timeout, authenticating the answer, deciding a race between two answers, and not
+re-invoking a thread that is already parked.
+
+The third is the real cost and is stated plainly rather than glossed. v0.1 resolved two
+simultaneous answers with a compare-and-set that held regardless of transport. v0.2 offers
+`pending()`, which correctly rejects any answer the graph has moved past but does not close
+the same-instant window; SQS FIFO keyed by thread closes it, and an HTTP entry point with
+concurrent handlers needs a conditional write of its own.
+
+### 19.4 Consequences that were not obvious
+
+Recorded because they were found by building it rather than by designing it.
+
+**A redelivered start message must not re-invoke a parked thread.** LangGraph treats it as
+a fresh turn and re-asks the question under a *new* interrupt id — a duplicate no consumer
+can detect. v0.1 got this from its store of applied message ids (§18.5). v0.2 requires one
+branch in the host's router, and it is why `pending()` is public rather than internal. Found
+by a failing test, not by review.
+
+**`expires_at` must be anchored to the checkpoint.** Computed as `now + timeout` at publish
+time it walks forward on every republish, so a thread retried often enough would never
+expire. `PendingInterrupt.asked_at` carries LangGraph's `created_at` for this.
+
+**Deduplication moves from `event_id` to `interrupt_id`.** Republishing is now the only
+recovery mechanism, so the key has to survive a republish; `event_id` is minted per publish
+and cannot.
+
+### 19.5 What got simpler in a way that matters
+
+The answer reaches the node verbatim. v0.1 merged the envelope's `action` into the payload,
+which needed a rule, which had a smuggling hole in its first draft (§18.1), which then
+needed an amendment to the amendment for timeout defaults (§18.1a). v0.2 has no merge and
+therefore no rule.
+
+### 19.6 Announce adapters are now the extension point
+
+Because nothing reads state back through the library, an announcer no longer has to be a
+message broker: it is anywhere the question can be put where whoever answers it will find
+it. `DynamoDbAnnounce` was added to demonstrate this — thirty lines, and an approvals UI is
+a `Query` against it with no broker in the system at all.
+
+### 19.7 v0.1 stands
+
+`v0.1.0` is tagged and its `TEST_REPORT.md` is unchanged. Where the answer-side guarantee is
+load-bearing and the entry point cannot serialise per thread, staying on it is a defensible
+choice rather than a fallback, and the migration guide says so.

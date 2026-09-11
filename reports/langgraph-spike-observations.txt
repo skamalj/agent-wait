@@ -25,7 +25,7 @@ behaviour records as identical bytes. Everything else is as observed.
   task 'nb'   interrupts=['<id-G>'] result=None error=None
   get_state().next         = ('nb',)
   -> tasks[*].interrupts over-reports: 'na' has finished and still lists its id.
-  -> task.result is the discriminator, and is what still_pending() reads.
+  -> task.result is the discriminator, and is what pending() reads.
 
 == PARALLEL: replaying an already-applied resume ==
   applied <id-H> twice; side-effect log = ['a']
@@ -45,4 +45,15 @@ behaviour records as identical bytes. Everything else is as observed.
   final state values       = {'v': {'done': True}}
   get_state().tasks        = []
   -> resuming by id through the parent works; no subgraph-specific path needed.
+
+== TOOLNODE: two tools that both interrupt, dispatched by one ToolNode ==
+  first invoke raised      = [('<id-L>', {'which': 'a', 'x': '1'})]
+  after resuming it        = [('<id-L>', {'which': 'b', 'x': '2'})]
+  same id for both?        = True
+  tasks while parked on b  = [('tools', ['<id-L>'], {})]
+  after resuming b         = 0 interrupts left
+  -> #6624: only one interrupt surfaces per invoke, not two.
+  -> #6626: the second carries the SAME id as the first. A different question,
+     an identical id. dedupe_key would drop it; pending() would read result={}
+     as finished. agent-wait's rule: one interrupt() per node.
 

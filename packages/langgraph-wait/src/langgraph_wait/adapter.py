@@ -1,49 +1,38 @@
-"""`LangGraphAdapter` -- the five methods the core needs, and nothing else.
+"""`LangGraphAdapter` -- three methods, and the one LangGraph bug that matters.
 
-The core never imports LangGraph. Everything framework-specific lives here, which is
-also where the framework's rough edges get handled.
+The core never imports LangGraph. Everything framework-specific lives here, which is also
+where the framework's rough edges get handled.
 
-## What was verified empirically, against langgraph 1.2.11
+## `get_state().tasks[*].interrupts` over-reports
 
-REQUIREMENTS section 9.2 asks for a spike rather than an assumption, because the
-correctness of the whole design rests on two properties. `tests/test_spike_langgraph.py`
-asserts all of this, so we find out if a future version changes it.
+This is the finding the whole adapter is shaped around (langgraph #4796 / #6792,
+reproduced against 1.2.11 in `tests/test_spike_langgraph.py`). With two parallel
+interrupts, resume one, and the *finished* task still lists its interrupt id. Anyone
+building "what is this thread waiting on?" from `tasks[*].interrupts` alone gets an
+interrupt the graph has already moved past -- and the failure mode is republishing an
+approval button for a node that already ran, or resuming it a second time.
 
-1. **`Interrupt.id` is stable** across `invoke(None, config)` re-entry and across
-   resume-from-checkpoint. Confirmed. This is what lets `sha256(thread|interrupt|
-   checkpoint)` be an idempotency key that survives a crash and a redelivery.
-2. **`get_state(config).config["configurable"]["checkpoint_id"]` is stable** for a
-   parked thread across repeated reads. Confirmed. Same reason.
-3. **`get_state().tasks[*].interrupts` over-reports.** This is the bug that matters
-   (langgraph #4796 / #6792). With two parallel interrupts, resume one and the finished
-   task *still* lists its interrupt id -- so the obvious `still_pending()` returns True
-   for an interrupt the graph has already moved past.
+The discriminator is `task.result`: it holds the finished task's return value and is
+`None` while the task is genuinely parked. `pending()` filters on it, and the spike test
+pins the behaviour so a future LangGraph fix shows up as a failing test rather than as
+silence.
 
-   The discriminator is `task.result`: it holds the finished task's return value and is
-   `None` while the task is genuinely parked. `still_pending()` below checks both, and
-   the spike test pins the behaviour so a LangGraph fix shows up as a failing test
-   rather than as silence.
+## What else was verified empirically, against langgraph 1.2.11
 
-   Replaying a resume for an already-resumed parallel interrupt does *not* repeat the
-   node's side effect -- LangGraph is idempotent there -- so this is a second line of
-   defence rather than the only one. The first is the status compare-and-set in
-   `dispatch()`, which rejects the redelivery before the graph is ever invoked.
-4. **Interrupts raised inside a subgraph** surface on the parent's `__interrupt__` with
-   a stable id, and the parent's `get_state()` reports them against the subgraph node's
-   task. `subgraphs=True` was not needed. Resuming by id works through the parent.
-5. **"Applied" is not "persisted"** (section 18.5). `dispatch()` marks a start message
-   applied before the graph consumes it, so a first run that dies before LangGraph writes
-   a checkpoint leaves a message recorded as applied against a thread with nothing to
-   resume from -- and `invoke(None, config)` on it raises `EmptyInputError`.
-   `has_checkpoint()` below is what separates that from an ordinary redelivery.
+* **`Interrupt.id` is stable** across `invoke(None, config)` re-entry and across
+  resume-from-checkpoint. This is what makes `dedupe_key` work: a republished envelope
+  carries the same id, so consumers can discard it.
+* **Interrupts raised inside a subgraph** surface on the parent's state against the
+  subgraph node's task, with a stable id. `subgraphs=True` was not needed, and resuming
+  by id works through the parent.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from agent_wait import PendingInterrupt, Wait
-from langgraph.types import Command
+from agent_wait import PendingInterrupt
 
 from .ask import unwrap
 
@@ -56,74 +45,43 @@ class LangGraphAdapter:
     def __init__(self, graph: Any) -> None:
         self.graph = graph
 
-    # ------------------------------------------------------------------ config
     def config_for(self, thread_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": thread_id}}
 
-    # ------------------------------------------------------------------ extract
-    def extract(self, result: Any, config: Any) -> list[PendingInterrupt]:
-        """Interrupts raised by the run that just returned.
+    def invoke(self, value: Any, config: Any) -> Any:
+        """Run the graph. `value` is the caller's -- fresh input, or a `Command`."""
+        return self.graph.invoke(value, config)
 
-        `result["__interrupt__"]` is the authoritative list -- unlike `get_state().tasks`
-        it does not over-report. The checkpoint id comes from `get_state()`, read once:
-        every interrupt in one superstep shares it.
-        """
-        raw = result.get("__interrupt__") if isinstance(result, dict) else None
-        if not raw:
-            return []
-
-        checkpoint_id = self.checkpoint_id(config)
-        pending: list[PendingInterrupt] = []
-        for interrupt_obj in raw:
-            question, policy = unwrap(getattr(interrupt_obj, "value", None))
-            pending.append(
-                PendingInterrupt(
-                    interrupt_id=str(interrupt_obj.id),
-                    checkpoint_id=checkpoint_id,
-                    question=question,
-                    policy=policy,
-                )
-            )
-        return pending
-
-    def checkpoint_id(self, config: Any) -> str:
-        state = self.graph.get_state(config)
-        configurable = (state.config or {}).get("configurable", {})
-        return str(configurable.get("checkpoint_id") or "")
-
-    def has_checkpoint(self, thread_id: str) -> bool:
-        """Section 18.5. Has the checkpointer kept anything for this thread?
-
-        Both signals are checked because they fail in different directions. A thread that
-        has never run returns a snapshot with no `checkpoint_id` *and* empty `values`; a
-        thread whose first superstep interrupted before writing any channel has a
-        `checkpoint_id` but may still have empty `values`. Either one on its own would
-        misclassify a real case.
-        """
+    def pending(self, thread_id: str) -> list[PendingInterrupt]:
+        """What this thread is parked on right now. `[]` if it has never run."""
         state = self.graph.get_state(self.config_for(thread_id))
-        configurable = (getattr(state, "config", None) or {}).get("configurable", {})
-        return bool(configurable.get("checkpoint_id")) or bool(getattr(state, "values", None))
+        asked_at = _epoch(getattr(state, "created_at", None))
 
-    # ------------------------------------------------------------------ resume
-    def build_resume(self, wait: Wait, resume_value: Any) -> Command:
-        """Dict-keyed so parallel interrupts resume independently (section 9.2).
-
-        `Command(resume=value)` -- the non-dict form -- would hand the same value to
-        every parked interrupt on the thread. With two approvals outstanding that is one
-        click approving both.
-        """
-        return Command(resume={wait.interrupt_id: resume_value})
-
-    # ------------------------------------------------------------------ guard
-    def still_pending(self, wait: Wait) -> bool:
-        """Is the thread genuinely still parked on this interrupt?
-
-        See the module docstring: `task.interrupts` alone over-reports after a partial
-        parallel resume, so a task that has already produced a result does not count.
-        """
-        state = self.graph.get_state(self.config_for(wait.thread_id))
+        out: list[PendingInterrupt] = []
         for task in getattr(state, "tasks", ()) or ():
-            for pending in getattr(task, "interrupts", ()) or ():
-                if str(getattr(pending, "id", "")) == wait.interrupt_id:
-                    return getattr(task, "result", None) is None
-        return False
+            # See the module docstring. A task that has produced a result is finished,
+            # whatever its `interrupts` list still claims.
+            if getattr(task, "result", None) is not None:
+                continue
+            for raw in getattr(task, "interrupts", ()) or ():
+                question, policy = unwrap(getattr(raw, "value", None))
+                out.append(
+                    PendingInterrupt(
+                        interrupt_id=str(raw.id),
+                        question=question,
+                        policy=policy,
+                        asked_at=asked_at,
+                    )
+                )
+        return out
+
+
+def _epoch(created_at: Any) -> float | None:
+    """LangGraph stamps checkpoints with an ISO-8601 string. Anchor `expires_at` to it
+    so a republished question keeps its original deadline."""
+    if not isinstance(created_at, str):
+        return None
+    try:
+        return datetime.fromisoformat(created_at).timestamp()
+    except ValueError:
+        return None
