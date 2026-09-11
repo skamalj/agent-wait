@@ -5,10 +5,16 @@ was delivered there.
 
 ## 0. Read this first
 
-**The end-to-end level has not been run for v0.2.** Everything below the AWS-local line is
-verified; the deployed run is written and not yet executed against a real account. §5 says
-exactly what that leaves unproven. v0.1's e2e evidence in `reports/` describes a system
-that no longer exists.
+**Published.** `agent-wait`, `langgraph-wait` and `agent-wait-aws` 0.2.0 are on PyPI,
+and the published artefacts — not the local build — were installed into a clean
+environment and driven through `scripts/smoke_from_pypi.py`: a real graph, every
+announcer, a signed webhook to a local receiver, republish, resume, and the late-duplicate
+guard. It passed on Windows here and on an Ubuntu runner in the release workflow.
+
+**The deployed AWS run has not been executed for v0.2.** Everything below the AWS-local
+line is verified; the Lambda/SQS scenarios are written and not yet run against a real
+account. §5 says exactly what that leaves unproven. v0.1's e2e evidence in `reports/`
+describes a system that no longer exists.
 
 ---
 
@@ -249,6 +255,22 @@ Decisions taken while building, recorded rather than escalated.
     reintroduce one. No retry, by the same reasoning as every other adapter:
     `republish()` is the retry. The timeout defaults to five seconds because the POST runs
     inside the agent's own invocation and a slow receiver must not stretch it.
+
+16. **CI was broken on `main` before this release, and nobody noticed.** The
+    coverage-floor step used a YAML folded scalar around a multi-line `python -c`, which
+    indents the second line and raises `IndentationError`. Tests, lint and types had been
+    passing; only that final step failed, and it had been failing since v0.1. Moved to
+    `scripts/coverage_floor.py`. Two further CI defects in the new release workflow were
+    found by running it: the PyPI-availability poll ran `uv pip` before any venv existed
+    (so every attempt errored and it "waited" five minutes for a package that was already
+    there), and `workflow_dispatch` on the tag ran the tag's old workflow file. Both fixed;
+    the workflow now takes a `version` input for manual runs.
+
+17. **Attribution.** From this release, commits are authored `Kamal <skamalj@gmail.com>`
+    with no co-author trailer, at the owner's direction. PR #8 was squash-merged locally
+    for that reason rather than through the GitHub button, which would have stamped the
+    account's default email. Earlier commits on `main` keep their trailers: rewriting them
+    would need a force-push, which this repository does not do.
 
 ## 7. Open questions
 
