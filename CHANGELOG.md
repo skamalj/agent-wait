@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-09-11
+
+**`@hitl` is the only way to declare a question.** `ask()` is gone; the decorator makes
+the function it sits on interruptible. A function with a `decision` parameter (name
+configurable with `decision=`) always runs and receives the answer; one without runs only
+on `{"action": "approve"}`. `question` is `{"function", "args"}`; `source` is
+`{"function"}`.
+
+**`HumanInTheLoopMiddleware` support removed.** It interrupts before the tool, `@hitl`
+inside it; both on one tool is two interrupts. Documented as incompatible. The `langchain`
+dev dependency and the policy registry went with it.
+
+Public surface of `langgraph-wait` is now `hitl` and `publish_interrupts`.
+
 ## 0.3.0 — 2026-09-11
 
 **Publish only.** The `WaitPublisher` wrapper, `pending()`, `republish()`, `is_answer()`

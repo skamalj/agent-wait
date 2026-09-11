@@ -1,11 +1,11 @@
-"""The customer's graph. Nothing in here knows about DynamoDB, SQS, tokens or Lambda.
+"""The customer's graph. Nothing in here knows about DynamoDB, SQS or Lambda.
 
-    load_order -> review -> (issue_refund | notify_customer) -> END
+    load_order -> (auto_approve | review) -> (issue_refund | notify_customer) -> END
 
-`review` asks a human when the amount is large enough to matter. That is the entire
-integration: one `ask()` call, in the node where the decision belongs. The graph has no
-idea where the answer will come from, and would run identically in a notebook, on a
-laptop, or on Lambda behind SQS.
+`review` is a `@hitl` node: calling it parks the graph on a question for finance. That
+is the entire integration -- one decorator, on the node where the decision belongs. The
+graph has no idea where the answer will come from, and would run identically in a
+notebook, on a laptop, or on Lambda behind SQS. Small amounts route around it.
 
 `issue_refund` appends to `PAYMENTS_CALLED`. It stands in for the irreversible call, and
 the integration tests end by asserting how many entries it has.
@@ -19,7 +19,7 @@ from typing import Any, TypedDict
 from agent_wait import WaitPolicy
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph_wait import ask
+from langgraph_wait import hitl
 
 PAYMENTS_CALLED: list[str] = []
 """The side effect that must never happen twice."""
@@ -47,29 +47,25 @@ def load_order(state: RefundState) -> RefundState:
     return {"customer": f"customer-of-{state['order_id']}"}
 
 
-def review(state: RefundState) -> RefundState:
-    if state["amount"] <= APPROVAL_THRESHOLD:
-        return {"decision": {"action": "approve", "by": "policy:auto"}}
+FINANCE = WaitPolicy(
+    timeout=DEMO_TIMEOUT,
+    # Advisory, all of it. `timeout` is published as an absolute `expires_at` and
+    # `default` as the value to send when it lapses -- but nothing in agent-wait acts
+    # on either. Whoever consumes the envelope decides when the deadline has passed.
+    default={"action": "reject", "reason": f"no response within {DEMO_TIMEOUT}"},
+    allowed_actions=("approve", "reject"),
+    tags={"approver_group": "finance"},
+)
 
-    decision = ask(
-        {
-            "kind": "refund_approval",
-            "order_id": state["order_id"],
-            "amount": state["amount"],
-            "customer": state.get("customer"),
-        },
-        policy=WaitPolicy(
-            timeout=DEMO_TIMEOUT,
-            # Advisory, all of it. `timeout` is published as an absolute `expires_at`
-            # and `default` as the value to send when it lapses -- but nothing in
-            # agent-wait acts on either. Whoever consumes the envelope decides when the
-            # deadline has passed and what to do about it. See `handler.py`.
-            default={"action": "reject", "reason": f"no response within {DEMO_TIMEOUT}"},
-            allowed_actions=("approve", "reject"),
-            tags={"approver_group": "finance"},
-        ),
-    )
-    return {"decision": decision}
+
+def auto_approve(state: RefundState) -> RefundState:
+    return {"decision": {"action": "approve", "by": "policy:auto"}}
+
+
+@hitl(FINANCE)
+def review(state: RefundState, decision: dict[str, Any] | None = None) -> RefundState:
+    """Parks the graph. Runs only once the answer is in -- `decision` is it, verbatim."""
+    return {"decision": decision or {}}
 
 
 def issue_refund(state: RefundState) -> RefundState:
@@ -103,18 +99,24 @@ def notify_customer(state: RefundState) -> RefundState:
     return {"status": state.get("status", "rejected")}
 
 
+def needs_review(state: RefundState) -> str:
+    return "review" if state["amount"] > APPROVAL_THRESHOLD else "auto_approve"
+
+
 def route(state: RefundState) -> str:
-    return "issue_refund" if state["decision"]["action"] == "approve" else "notify_customer"
+    return "issue_refund" if state["decision"].get("action") == "approve" else "notify_customer"
 
 
 def build_graph(checkpointer: Any = None) -> Any:
     graph = StateGraph(RefundState)
     graph.add_node("load_order", load_order)
+    graph.add_node("auto_approve", auto_approve)
     graph.add_node("review", review)
     graph.add_node("issue_refund", issue_refund)
     graph.add_node("notify_customer", notify_customer)
     graph.add_edge(START, "load_order")
-    graph.add_edge("load_order", "review")
+    graph.add_conditional_edges("load_order", needs_review, ["review", "auto_approve"])
+    graph.add_conditional_edges("auto_approve", route, ["issue_refund", "notify_customer"])
     graph.add_conditional_edges("review", route, ["issue_refund", "notify_customer"])
     graph.add_edge("issue_refund", "notify_customer")
     graph.add_edge("notify_customer", END)

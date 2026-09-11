@@ -10,7 +10,7 @@ flowchart LR
         R -->|yes| RS["graph.invoke(Command(resume=...), cfg)"]
         I --> G[["LangGraph"]]
         RS --> G
-        G -.->|"ask() parks a node"| CP[(checkpointer)]
+        G -.->|"a @hitl call parks the node"| CP[(checkpointer)]
         G --> P["publish_interrupts(result, thread_id, announce)"]
     end
     P -->|"one envelope per Interrupt"| A[["announcers"]]
@@ -28,7 +28,7 @@ carries `__interrupt__`: a sequence of `Interrupt` objects. Per the LangGraph re
 an `Interrupt` has two attributes — `value` (what was passed to `interrupt()`) and `id`.
 `ns`, `when` and `resumable` were removed in 0.6.
 
-That is the entire input. `ask()` packed the question and the policy into `value`;
+That is the entire input. `@hitl` packed the question and the policy into `value`;
 `id` is what the answer has to carry back; `thread_id` is the one thing the result does
 not echo, so the host passes it. No graph handle, no `get_state()`, no checkpointer —
 the library never touches persistence, and it is not in the process when the answer
@@ -48,24 +48,24 @@ It would work, and it over-reports. After one of two parallel interrupts is resu
 only what *this run* raised, which is exactly the set to publish. Reading the result
 instead of the state removed a filter, a caveat, and a whole class of bug.
 
-## Three interrupt shapes, one envelope
+## Two interrupt shapes, one envelope
 
 | raised by | `Interrupt.value` | published as |
 |---|---|---|
-| `ask(question, policy)` | `{"question": …, "__wait__": policy}` | one envelope, that policy |
+| a `@hitl` call | `{"question": {"function", "args"}, "__wait__": policy, "__source__": …}` | one envelope, that policy |
 | bare `interrupt(value)` | `value` | one envelope, default policy |
-| `HumanInTheLoopMiddleware` | `{"action_requests": […], "review_configs": […]}` | **one envelope for the batch**; policy from `@hitl` on the first tool |
 
-The middleware batches every tool call needing review into one interrupt, and its answer
-is `{"decisions": […]}` in batch order. That also sidesteps the ToolNode same-id problem
-below, because there is only one interrupt.
+LangChain's `HumanInTheLoopMiddleware` raises a third shape — one interrupt for a whole
+batch of tool calls — and is **not supported**: `@hitl` on a tool the middleware also
+intercepts interrupts twice. It is one or the other, and this library is the other.
 
 ## The two modes of `@hitl`
 
-**Interrupt** (default): the wrapper calls `ask({"tool", "args"}, policy)` before the
-tool body. The thread parks. `publish_interrupts` after the run announces it.
-`{"action": "approve"}` runs the tool; `{"action": "approve", "args": {…}}` runs it with
-those; anything else is returned to the model as the tool's result, unexecuted.
+**Interrupt** (default): the wrapper raises the interrupt with `{"function", "args"}`
+before the body. The thread parks. `publish_interrupts` after the run announces it. If
+the function declares a `decision` parameter it always runs and receives the answer;
+otherwise `{"action": "approve"}` runs it, `{"action": "approve", "args": {…}}` runs it
+with those, and anything else is returned in its place, unexecuted.
 
 **Async**: the wrapper *is* the publisher. It announces through the decorator's own
 announcers, with `question_id = sha256(thread | tool | args)`, and returns
@@ -112,9 +112,8 @@ Only one surfaces per run (#6624), and the second carries the *same id* as the f
 (#6626): a different question under an identical `dedupe_key`, which a consumer would
 discard. `Interrupt.id` is a hash of the checkpoint namespace alone; the counter that
 routes resume values back to the right `interrupt()` call is not part of it. The rule is
-**one `interrupt()` per node**, or `HumanInTheLoopMiddleware`, which batches. The spike
-asserts the bug is present so a LangGraph fix fails the test and this section gets
-removed.
+**one `interrupt()` per node**. The spike asserts the bug is present so a LangGraph fix
+fails the test and this section gets removed.
 
 ## Failure isolation
 

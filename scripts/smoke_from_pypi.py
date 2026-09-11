@@ -22,7 +22,7 @@ from agent_wait_aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, S
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
-from langgraph_wait import ask, hitl, publish_interrupts
+from langgraph_wait import hitl, publish_interrupts
 
 SECRET = b"smoke"
 PAID: list[str] = []
@@ -68,21 +68,25 @@ class FakeClient:
 POLICY = WaitPolicy(timeout="PT1H", default={"action": "reject"}, allowed_actions=("approve", "reject"))
 
 
-def interrupt_graph() -> Any:
-    def review(s: State) -> State:
-        if s["amount"] <= 100:
-            return {"decision": {"action": "approve"}}
-        return {"decision": ask({"kind": "expense", "claim": s["claim"], "amount": s["amount"]}, POLICY)}
+@hitl(POLICY)
+def review(state: State, decision: Any = None) -> State:
+    return {"decision": decision}
 
+
+def interrupt_graph() -> Any:
     def pay(s: State) -> State:
         PAID.append(s["claim"])
         return {"status": "paid"}
 
     g = StateGraph(State)
+    g.add_node("triage", lambda s: {})
     g.add_node("review", review)
+    g.add_node("auto", lambda s: {"decision": {"action": "approve"}})
     g.add_node("pay", pay)
     g.add_node("decline", lambda s: {"status": "declined"})
-    g.add_edge(START, "review")
+    g.add_edge(START, "triage")
+    g.add_conditional_edges("triage", lambda s: "auto" if s["amount"] <= 100 else "review")
+    g.add_conditional_edges("auto", lambda s: "pay")
     g.add_conditional_edges("review", lambda s: "pay" if s["decision"]["action"] == "approve" else "decline")
     g.add_edge("pay", END)
     g.add_edge("decline", END)
@@ -118,7 +122,10 @@ def main() -> None:
     (envelope,) = publish_interrupts(
         graph.invoke({"claim": "c-2", "amount": 5000}, cfg("c-2")), "c-2", announce
     )
-    check(envelope.question == {"kind": "expense", "claim": "c-2", "amount": 5000}, "question intact")
+    check(
+        envelope.question["function"] == "review" and envelope.question["args"]["state"]["amount"] == 5000,
+        "question intact",
+    )
     check(envelope.expires_at is not None, "expires_at set from PT1H")
     check(envelope.reply_with["question_id"] == envelope.question_id, "reply_with names the question")
     check(envelope.to_dict()["reply_to"] is None, "reply_to is optional and null")
@@ -170,7 +177,7 @@ def main() -> None:
     check(out["status"] == "carried on", "next node ran in the same invoke")
     check(PAID == ["c-1", "c-2"], "tool body did not run")
     check(
-        len(inbox.events) == 1 and inbox.events[0][1].source == {"tool": "big_transfer"},
+        len(inbox.events) == 1 and inbox.events[0][1].source == {"function": "big_transfer"},
         "decorator published it",
     )
 

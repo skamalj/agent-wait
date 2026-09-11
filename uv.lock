@@ -12,12 +12,12 @@ members = [
 
 [[package]]
 name = "agent-wait"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/agent-wait" }
 
 [[package]]
 name = "agent-wait-aws"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/agent-wait-aws" }
 dependencies = [
     { name = "agent-wait" },
@@ -32,7 +32,7 @@ requires-dist = [
 
 [[package]]
 name = "agent-wait-workspace"
-version = "0.3.0"
+version = "0.4.0"
 source = { virtual = "." }
 dependencies = [
     { name = "agent-wait" },
@@ -46,7 +46,6 @@ dev = [
     { name = "boto3" },
     { name = "boto3-stubs", extra = ["dynamodb", "events", "scheduler", "secretsmanager", "sns", "sqs"] },
     { name = "constructs" },
-    { name = "langchain" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "moto", extra = ["dynamodb", "events"] },
@@ -69,7 +68,6 @@ dev = [
     { name = "boto3", specifier = ">=1.35" },
     { name = "boto3-stubs", extras = ["dynamodb", "sqs", "sns", "events", "scheduler", "secretsmanager"], specifier = ">=1.35" },
     { name = "constructs", specifier = ">=10.3" },
-    { name = "langchain", specifier = ">=1.0" },
     { name = "langgraph", specifier = ">=1.2,<2" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2.0" },
     { name = "moto", extras = ["dynamodb", "sqs", "sns", "events", "scheduler"], specifier = ">=5.0" },
@@ -828,20 +826,6 @@ wheels = [
 ]
 
 [[package]]
-name = "langchain"
-version = "1.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "langchain-core" },
-    { name = "langgraph" },
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/5d/0ef368fdcf5df08a394787196fb7a80f473a9c7b3fc4cd2e3b53a7a5853d/langchain-1.4.0.tar.gz", hash = "sha256:08da122a439f738f4c09a5158cfa3d2c1d8bea2d0bde7fbbf4aeb4d7f7fd9d80", size = 729354, upload-time = "2026-09-03T16:59:32.442Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/fa/7da07d9977a5e292ef602c1bb911514ff8206e85dc09a66961874345d57a/langchain-1.4.0-py3-none-any.whl", hash = "sha256:af1dc0161d30944a52ec7844d9bf890d0497b12ec0703069f3503b4003cbbac3", size = 161534, upload-time = "2026-09-03T16:59:31.154Z" },
-]
-
-[[package]]
 name = "langchain-core"
 version = "1.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -949,7 +933,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-wait"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/langgraph-wait" }
 dependencies = [
     { name = "agent-wait" },

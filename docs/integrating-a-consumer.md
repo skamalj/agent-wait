@@ -38,10 +38,10 @@ def on_click(envelope: dict, decision: dict) -> None:
     send_to(agent_entry_point, {**envelope["reply_with"], "answer": decision})
 ```
 
-`answer` is returned to the graph **verbatim**. If the question came from a `@hitl`
-tool, `{"action": "approve"}` runs it and anything else is shown to the model as the
-reason it did not run. If the question is a middleware batch (`question.actions`), the
-answer is `{"decisions": [...]}` with one entry per action, in order.
+`answer` is returned to the graph **verbatim**. `question` tells you what is waiting:
+`{"function": "issue_refund", "args": {...}}`. For a tool, `{"action": "approve"}` runs it
+and anything else is shown to the model as the reason it did not run; a node that asked
+for the answer gets whatever you send.
 
 Sending the same answer twice is harmless — the agent's framework ignores a resume for a
 question it has already moved past. So is a second, different answer: the first stands.

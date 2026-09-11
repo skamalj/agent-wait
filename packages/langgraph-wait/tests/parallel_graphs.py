@@ -11,7 +11,7 @@ from typing import Any, TypedDict
 from agent_wait import WaitPolicy
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph_wait import ask
+from langgraph_wait import hitl
 
 POLICY = WaitPolicy(
     timeout="PT2H",
@@ -27,9 +27,18 @@ class Batch(TypedDict, total=False):
 
 def build_parallel_graph() -> Any:
     """Two nodes, one superstep, two independent approvals."""
+
+    @hitl(POLICY)
+    def na(state: Batch, decision: Any = None) -> Batch:
+        return {"a": decision}
+
+    @hitl(POLICY)
+    def nb(state: Batch, decision: Any = None) -> Batch:
+        return {"b": decision}
+
     graph = StateGraph(Batch)
-    graph.add_node("na", lambda state: {"a": ask({"kind": "approval", "which": "a"}, POLICY)})
-    graph.add_node("nb", lambda state: {"b": ask({"kind": "approval", "which": "b"}, POLICY)})
+    graph.add_node("na", na)
+    graph.add_node("nb", nb)
     graph.add_edge(START, "na")
     graph.add_edge(START, "nb")
     graph.add_edge("na", END)
@@ -43,8 +52,13 @@ class Nested(TypedDict, total=False):
 
 def build_subgraph_graph() -> Any:
     """The interrupt is raised two levels down; the parent is where it surfaces."""
+
+    @hitl(POLICY)
+    def inner_node(state: Nested, decision: Any = None) -> Nested:
+        return {"v": decision}
+
     inner = StateGraph(Nested)
-    inner.add_node("inner_node", lambda state: {"v": ask({"kind": "inner_approval"}, POLICY)})
+    inner.add_node("inner_node", inner_node)
     inner.add_edge(START, "inner_node")
     inner.add_edge("inner_node", END)
 

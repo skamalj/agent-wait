@@ -44,7 +44,7 @@ from .model import (
 from .policy import WaitPolicy, parse_duration
 from .publish import build_envelope, publish
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "MAX_QUESTION_BYTES",

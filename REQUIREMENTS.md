@@ -714,3 +714,32 @@ the host to write.
 `get_state().tasks[*].interrupts` over-reports after a partial parallel resume (#4796 /
 #6792). `result["__interrupt__"]` lists only what the run raised. Reading the result
 removed the filter, the caveat, and the need for a graph handle.
+
+---
+
+## 21. v0.4 — `@hitl` only (2026-09-11)
+
+Directed by the owner immediately after v0.3 shipped.
+
+### 21.1 `ask()` is gone
+
+`@hitl` makes the function it decorates interruptible; there is no separate call to
+make. On a tool, the body runs only on `{"action": "approve"}` (optionally with edited
+`args`); anything else is returned in its place. On a node that needs the answer, a
+`decision` parameter (name configurable) means the function always runs and receives it.
+The question is `{"function": name, "args": {...}}`; `source` is `{"function": name}`.
+
+### 21.2 `HumanInTheLoopMiddleware` is not supported
+
+LangChain's middleware interrupts before a tool is called, in its own batch shape with its
+own resume format. `@hitl` interrupts inside the call. Both on one tool interrupt twice
+for one approval. Rather than carry a third interrupt shape and a policy registry to
+bridge it, the owner's direction is to document the incompatibility and support neither
+half of it: use the middleware, or use this library. The `langchain` dev dependency and
+the registry were removed.
+
+### 21.3 Public surface
+
+`langgraph_wait`: `hitl`, `publish_interrupts` (and `questions_in`, which it uses).
+`agent_wait`: `WaitPolicy`, `Question`, `WaitEnvelope`, `publish`, `build_envelope`, the
+announcers. Nothing else.

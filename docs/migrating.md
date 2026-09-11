@@ -1,5 +1,33 @@
 # Migrating
 
+## From 0.3 to 0.4
+
+`ask()` is gone. `@hitl` makes a function interruptible; there is no separate call.
+
+| 0.3 | 0.4 |
+|---|---|
+| `decision = ask(question, policy)` inside a node | `@hitl(policy)` on the node, with a `decision` parameter |
+| envelope `question` = whatever you passed to `ask()` | `{"function": name, "args": {...}}` |
+| envelope `source` = `{"tool": ...}` | `{"function": ...}` |
+| `HumanInTheLoopMiddleware` batches published | not supported — `@hitl` and the middleware interrupt twice on one tool; use one |
+| `policy_for()`, `question_id_for()` exported | internal |
+
+```python
+# 0.3
+def review(state):
+    decision = ask({"kind": "refund", "amount": state["amount"]}, FINANCE)
+    return {"decision": decision}
+
+
+# 0.4
+@hitl(FINANCE)
+def review(state, decision=None):
+    return {"decision": decision}
+```
+
+Consumers: `question` is now always `{"function", "args"}` from `@hitl`; render from
+`args` rather than from a custom shape.
+
 ## From 0.2 to 0.3
 
 0.2 wrapped the graph in a `WaitPublisher` that ran it, read `get_state()`, and offered
@@ -17,7 +45,6 @@ and everything that read state: the library announces the interrupt and stops.
 | envelope `interrupt_id` | `question_id` |
 | envelope `wait.resumed` | gone — one transition, `wait.created` |
 | — | `@hitl(policy, mode="interrupt" \| "async")` |
-| — | `HumanInTheLoopMiddleware` batch shape understood |
 | — | policy `answer_ttl`; envelope `source` |
 
 A 0.2 handler:

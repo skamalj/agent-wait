@@ -1,34 +1,34 @@
-# TEST_REPORT — agent-wait v0.3.0
+# TEST_REPORT — agent-wait v0.4.0
 
-Supersedes the v0.2 report. v0.1's is preserved at tag `v0.1.0`.
+Supersedes the v0.3 report. Earlier reports are at their tags.
 
 ## 0. Read this first
 
-**The library is now one call after the run.** `publish_interrupts(result, thread_id,
-announce)` reads `result["__interrupt__"]` and hands envelopes to announcers. It holds no
-graph, reads no state, receives nothing. `ask()` and `@hitl` declare questions in the
-graph; `@hitl(mode="async")` publishes from inside the tool without parking the thread.
+**Two things in the library.** `@hitl` makes a function interruptible — on a tool the
+body runs only on approve; on a node with a `decision` parameter it always runs and gets
+the answer; in `mode="async"` the decorator publishes and returns pending without
+parking. `publish_interrupts(result, thread_id, announce)` after the run reads
+`result["__interrupt__"]` and hands envelopes to announcers. No graph handle, no state
+read, nothing received. `ask()` is gone. `HumanInTheLoopMiddleware` is documented as
+incompatible and not supported.
 
-**Verified:** local unit and integration levels including real `create_agent` +
-`HumanInTheLoopMiddleware`; every announcer against moto or a real local HTTP server;
-the smoke test against the built wheels from a clean venv. **Not verified:** the deployed
-AWS run (§5), and the PyPI round trip until 0.3.0 is published — the release workflow
-does that on the tag.
+**Verified:** local unit and integration levels; every announcer against moto or a real
+local HTTP server; the smoke test against the built wheels from a clean venv. **Not
+verified:** the deployed AWS run (§5), and the PyPI round trip until 0.4.0 is published —
+the release workflow does that on the tag.
 
 ---
 
 ## 1. Summary
 
-| | v0.2 | v0.3 |
+| | v0.3 | v0.4 |
 |---|---|---|
-| Host calls | `agent.invoke()` on a wrapper; `pending()`, `republish()`, `is_answer()`, `resume_command()` | `graph.invoke()` (yours) then `publish_interrupts()` |
-| Reads framework state | yes — `get_state()` twice per invoke | never |
-| Receive path | guards in the router, using library calls | none; documented recommended shape only |
-| Ways to raise a question | `ask()` | `ask()`, `@hitl` (interrupt), `@hitl` (async), middleware batches |
-| Transitions | `created`, `resumed` | `created` |
-| Source lines | 1,302 | 1,398 (the `@hitl` tag and middleware support are new; the wrapper and adapter are gone) |
-| Tests | 147 | 133 |
-| Coverage | 99% | 98% |
+| Ways to raise a question | `ask()`, `@hitl`, middleware batches | `@hitl` (interrupt or async); a bare `interrupt()` still publishes |
+| `langgraph_wait` public names | `ask`, `unwrap`, `WAIT_KEY`, `hitl`, `policy_for`, `question_id_for`, `questions_in`, `publish_interrupts` | `hitl`, `publish_interrupts`, `questions_in` |
+| `HumanInTheLoopMiddleware` | one envelope per batch | not supported; documented as incompatible |
+| Dev dependencies | + `langchain` | removed |
+| Tests | 133 | 126 |
+| Coverage | 98% | 98% |
 
 ## 2. What was built
 
@@ -36,9 +36,9 @@ does that on the tag.
 (+ `answer_ttl`, `source`), `build_envelope()`, `publish()`, `BaseAnnounce` and the four
 core announcers. No dependencies. pyright strict.
 
-**`langgraph_wait`** — `ask(question, policy, source=)`, `@hitl(policy, mode=,
-announce=)`, `questions_in(result)`, `publish_interrupts(result, thread_id, announce)`.
-Three interrupt shapes: `ask()`, bare `interrupt()`, `HumanInTheLoopMiddleware`.
+**`langgraph_wait`** — `@hitl(policy, mode=, announce=, decision=)`,
+`publish_interrupts(result, thread_id, announce)`, `questions_in(result)`. Two interrupt
+shapes: a `@hitl` call, and a bare `interrupt()`.
 
 **`agent_wait_aws`** — SNS, SQS, EventBridge, DynamoDB announcers. `DynamoDbAnnounce`
 writes one row per question and never reads it.
@@ -46,7 +46,15 @@ writes one row per question and never reads it.
 **`examples/refund_agent`** — the graph, a host that is one `if` plus two calls, and
 three deployed scenarios (not run; see §5).
 
-## 3. What was removed since 0.2, and why
+## 3. What was removed since 0.3, and why
+
+| Removed | Reason |
+|---|---|
+| `ask()` | `@hitl` makes the function interruptible; a second way to say the same thing |
+| `HumanInTheLoopMiddleware` shape, the policy registry, `policy_for()` | The middleware interrupts before the tool; `@hitl` inside it. Both on one tool is two interrupts. Carrying a third shape to half-bridge that is complexity for a case we tell people not to do |
+| `langchain` dev dependency | only the middleware tests needed it |
+
+### Removed since 0.2
 
 | Removed | Reason |
 |---|---|
@@ -67,20 +75,18 @@ a raising announcer contained. `BaseAnnounce`, `LogAnnounce` (question never at 
 `WebhookAnnounce` against a real `http.server` — headers, body, HMAC verification, a 503
 and an unreachable host both becoming log lines.
 
-**LangGraph (52 tests).**
-- `publish_interrupts` against real `graph.invoke()` results: `ask()` shape with policy
-  and `source`; bare `interrupt()`; no interrupt; parallel nodes; a `stream()` chunk; the
-  round trip through `reply_with` with the answer verbatim.
-- `@hitl` interrupt mode on a real graph: parks and publishes `{tool, args}` with
-  `source`; approve runs; approve with edited args runs with them; reject returns the
-  decision unexecuted. Async mode: publishes through the decorator's announcers, returns
-  pending, the next node runs in the same invoke, nothing parked; deterministic ids across
-  calls and distinct across threads; `announce=` required at decoration time;
-  `publish_interrupts` afterwards is a no-op.
-- `HumanInTheLoopMiddleware` via `create_agent` and a fake tool-calling model: two tool
-  calls → one interrupt → one `Question` with `actions`/`review`, the `@hitl` policy of
-  the first tool, `source.via`; decisions resumed in batch order — approved ran, rejected
-  did not.
+**LangGraph (46 tests).**
+- `publish_interrupts` against real `graph.invoke()` results: the `@hitl` shape with
+  policy and `source`; bare `interrupt()`; no interrupt; parallel nodes; a `stream()`
+  chunk; the round trip through `reply_with` with the answer verbatim.
+- `@hitl` on a tool: parks and publishes `{function, args}` with `source`; approve runs;
+  approve with edited args runs with them; reject returns the answer in place of the
+  body. On a node: a `decision` parameter means it always runs and receives the answer,
+  approve or not; the parameter name is configurable. Under `@tool`: name, description
+  and args survive `functools.wraps`. Async: publishes through the decorator's own
+  announcers, returns pending, the next node runs in the same invoke, nothing parked;
+  deterministic ids across calls and distinct across threads; `announce=` required at
+  decoration time; `publish_interrupts` afterwards is a no-op.
 - Integration (refund agent, in-memory and SQLite checkpointers): a host of one `if`;
   duplicate answer → one refund; different answer after the first → first stands;
   the consumer sending `default` as an ordinary answer; parallel; subgraph.
@@ -92,7 +98,7 @@ GSI query; overwrite on republish; the example's checkpointer.
 ### Results
 
 ```
-133 passed, 4 skipped (the e2e level, opt-in)
+126 passed, 4 skipped (the e2e level, opt-in)
 ruff check      clean
 ruff format     clean
 pyright strict  0 errors
@@ -107,9 +113,8 @@ real account. The stack synthesises; the bundle builds. What only a deployment s
 `DynamoDbAnnounce` against real DynamoDB, the Lambda's IAM grants, and the SQS
 redelivery paths under a real queue.
 
-**Async mode with a real model.** The middleware and tag tests drive a fake tool-calling
-model. The tag's behaviour does not depend on the model, but "the model sees pending and
-says something sensible" is not something a fake can show.
+**Async mode with a real model.** The tag is exercised by calling the tool directly
+inside a node. "The model sees pending and says something sensible" needs a model.
 
 ## 6. Deviations
 
@@ -146,6 +151,18 @@ says something sensible" is not something a fake can show.
 7. **The spike's over-report finding is kept but no longer load-bearing.** The library
    reads `result["__interrupt__"]`, which does not over-report. The observation stays in
    the artifact for anyone who does read state, with the wording updated.
+
+8. **`ask()` removed and the middleware dropped, at the owner's direction.** The
+   middleware bridge had a hole the owner spotted before I did: `@hitl` on a tool the
+   middleware intercepts would interrupt twice, once by each. The tests had not caught it
+   because they registered the policy without replacing the tool's function. Rather than
+   add a third mode to paper over it, the whole bridge went. `question` is now always
+   `{function, args}` from `@hitl`, which is less flexible than a hand-built question and
+   more useful to an approver, since it says exactly which call is waiting.
+
+9. **The smoke test caught its own mistake.** Its `review(s, decision=None)` named the
+   state parameter `s`, so `question.args` had key `s`, not `state`. That is the rule
+   working — `args` keys are the function's real parameter names — and the test was wrong.
 
 ## 7. Open questions
 

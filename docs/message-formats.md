@@ -19,15 +19,14 @@ your queue, your webhook, or as a row in your table.
   "thread_id": "order-4471",
   "question_id": "a1b2c3d4e5f60718",
   "question": {
-    "kind": "refund_approval",
-    "order_id": "order-4471",
-    "amount": 41000
+    "function": "issue_refund",
+    "args": { "order_id": "order-4471", "amount": 41000 }
   },
   "allowed_actions": ["approve", "reject"],
   "expires_at": "2026-09-14T09:00:00Z",
   "default": { "action": "reject", "reason": "no response within P3D" },
   "answer_ttl": "PT15M",
-  "source": { "tool": "issue_refund" },
+  "source": { "function": "issue_refund" },
   "reply_to": null,
   "reply_with": {
     "thread_id": "order-4471",
@@ -45,12 +44,12 @@ your queue, your webhook, or as a row in your table.
 | `event_id` | ULID | Fresh on every publish. For logs and tracing. **Not** the deduplication key. |
 | `thread_id` | string | The agent's conversation identity. |
 | `question_id` | string | The question's identity. In interrupt mode it is LangGraph's `Interrupt.id`; in async mode it is derived from thread + tool + args. Stable across republishes. |
-| `question` | any | Whatever the graph asked. Opaque to every adapter; only your UI interprets it. |
+| `question` | any | From `@hitl`: `{"function": name, "args": {...}}`, the call that is waiting. From a bare `interrupt(value)`: `value` as is. Opaque to every adapter. |
 | `allowed_actions` | string[] | Which answers are meaningful. Advisory. |
 | `expires_at` | RFC 3339 UTC or null | When the asker considers the question stale. Advisory. Measured from publish time unless the caller supplied `asked_at`. |
 | `default` | any or null | What the asker said to assume if nobody answers. Advisory. |
 | `answer_ttl` | ISO 8601 duration or null | How long an answer stays usable after it is given. Advisory. |
-| `source` | object or null | Where it came from — `{"tool": ...}`, `{"node": ...}`, or for a middleware batch `{"tools": [...], "via": "HumanInTheLoopMiddleware"}`. |
+| `source` | object or null | `{"function": name}` for a `@hitl` question; null for a bare interrupt. |
 | `reply_to` | object or null | A hint for where to send the answer, if the host chose to publish one. Null otherwise. |
 | `reply_with` | object | A filled-in reply. Copy it, set `answer`, send it to the agent's entry point. |
 | `correlation` | object or null | `{"provider": ..., "id": ...}` when the question is tied to an external job. |
@@ -73,23 +72,6 @@ agent-wait publishes `allowed_actions`, `expires_at`, `default` and `answer_ttl`
 whoever consumes the envelope has the asker's intent in machine-readable form. Nothing
 in agent-wait acts on any of them — it never sees the answer.
 
-### The middleware batch
-
-When the question came from LangChain's `HumanInTheLoopMiddleware`, several tool calls
-share one `Interrupt`, so they share one envelope. `question` is then:
-
-```json
-{
-  "actions": [ { "name": "issue_refund", "args": { "order_id": "o1", "amount": 41000 } },
-               { "name": "send_email",   "args": { "to": "x@y" } } ],
-  "review":  [ { "action_name": "issue_refund", "allowed_decisions": ["approve", "edit", "reject", "respond"] },
-               { "action_name": "send_email",   "allowed_decisions": ["approve", "reject"] } ]
-}
-```
-
-and the answer is the middleware's own shape, one decision per action **in order**:
-`{"decisions": [{"type": "approve"}, {"type": "reject", "message": "not now"}]}`.
-
 ---
 
 ## 2. The answer (inbound) — recommended
@@ -110,13 +92,14 @@ should expect, so that "is this message a new request or an answer?" is one line
 |---|---|---|
 | `thread_id` | required | Which conversation. Copied from `reply_with`. |
 | `question_id` | required | Which question. Copied from `reply_with`. **Its presence is what makes this an answer.** |
-| `answer` | required | Returned **verbatim** by the `ask()` or `@hitl` call. Any JSON. |
+| `answer` | required | Received **verbatim** by the `@hitl` function. Any JSON. |
 | `valid_until` | optional | The answer's own expiry, if the approver wants one. |
 
-`answer` is whatever the graph expects. Nothing is merged into it or added to it. If the
-graph reads `decision["action"]`, send `{"action": "approve"}`; for a `@hitl` tool,
-`{"action": "approve"}` runs it, `{"action": "approve", "args": {...}}` runs it with
-those arguments, and anything else returns the decision to the model as the tool result.
+`answer` is whatever the `@hitl` function expects. Nothing is merged into it or added to
+it. For a function without a `decision` parameter, `{"action": "approve"}` runs it,
+`{"action": "approve", "args": {...}}` runs it with those arguments, and anything else is
+returned in its place. For a function with a `decision` parameter, the whole `answer`
+arrives there, whatever it is.
 
 ---
 
@@ -145,7 +128,7 @@ publish_interrupts(result, message["thread_id"], announce)
 ```
 
 That is the whole host. LangGraph loads the thread's latest checkpoint by `thread_id`,
-re-runs the interrupted node from the top, and the `ask()` call returns `answer`.
+re-runs the interrupted node from the top, and the `@hitl` call receives `answer`.
 
 Facts worth knowing, none of which the host has to code for:
 

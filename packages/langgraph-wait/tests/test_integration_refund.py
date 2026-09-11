@@ -89,8 +89,9 @@ def test_a_large_refund_parks_and_publishes(host: Host) -> None:
 
     envelope = host.latest()
     assert envelope.type == "wait.created"
-    assert envelope.question["kind"] == "refund_approval"
-    assert envelope.question["amount"] == 41000
+    assert envelope.question["function"] == "review"
+    assert envelope.question["args"]["state"]["amount"] == 41000
+    assert envelope.source == {"function": "review"}
     assert envelope.allowed_actions == ("approve", "reject")
     assert envelope.tags == {"approver_group": "finance"}
     assert envelope.expires_at is not None
@@ -175,7 +176,7 @@ def test_a_subgraph_interrupt_parks_and_resumes() -> None:
     host = Host(build_subgraph_graph())
     host.deliver({"thread_id": "nested-1", "input": {}})
     envelope = host.latest()
-    assert envelope.question == {"kind": "inner_approval"}
+    assert envelope.question["function"] == "inner_node"
 
     host.deliver(host.reply(envelope, {"action": "approve", "note": "within budget"}))
 
