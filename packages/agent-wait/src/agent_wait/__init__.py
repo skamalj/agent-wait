@@ -47,7 +47,7 @@ from .model import (
 from .policy import WaitPolicy, parse_duration
 from .publisher import FrameworkAdapter, WaitPublisher
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "MAX_QUESTION_BYTES",

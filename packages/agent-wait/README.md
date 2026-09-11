@@ -4,15 +4,20 @@
 [![CI](https://github.com/skamalj/agent-wait/actions/workflows/ci.yml/badge.svg)](https://github.com/skamalj/agent-wait/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/skamalj/agent-wait/blob/main/LICENSE)
 
-**Publish a LangGraph agent's interrupts to the outside world, so a human can answer them.**
+**Get a LangGraph interrupt out of the process, and the answer back in.**
 
-A LangGraph node calls `interrupt()` and the graph stops. If the agent runs in a Lambda,
-a container, or anything else that doesn't stick around, the process exits and nobody
-knows a question was asked or where to send the answer. agent-wait takes that pause and
-puts it somewhere people can see it — a topic, a queue, a webhook, a database row — with
-everything needed to answer it in one envelope.
+When a node calls `interrupt()`, the graph pauses and the interrupt is handed to whatever
+called `invoke()` — and that is where LangGraph stops. There is no built-in way to tell
+anyone *else* that a question was asked, and no built-in way for anyone else to answer
+it. The moment the question has to reach a person on Slack, an approvals dashboard, a
+ticket queue or another service, you are writing that code yourself — whether your agent
+is a server that runs for a year or a Lambda that is gone in seconds.
 
-It does not receive the answer. That part is yours, and it is about a dozen lines.
+agent-wait is that code. It takes the pause and puts it somewhere people can see it — a
+topic, a queue, a webhook, a database row — with everything needed to answer it in one
+envelope, and reduces "is this message a new request or an answer?" to a one-line check.
+
+It does not receive the answer for you. That part is yours, and it is about a dozen lines.
 
 ```bash
 pip install agent-wait langgraph-wait          # core + LangGraph

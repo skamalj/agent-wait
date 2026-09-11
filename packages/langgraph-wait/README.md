@@ -1,7 +1,7 @@
 # langgraph-wait
 
-The LangGraph side of [agent-wait](https://pypi.org/project/agent-wait/) — publish a
-LangGraph agent's interrupts so a human can answer them from anywhere.
+The LangGraph side of [agent-wait](https://pypi.org/project/agent-wait/) — get a LangGraph
+interrupt out of the process, and the answer back in.
 
 ```bash
 pip install langgraph-wait          # pulls in agent-wait

@@ -1,5 +1,5 @@
 site_name: agent-wait
-site_description: Publish a LangGraph agent's interrupts to the outside world, so a human can answer them.
+site_description: Get a LangGraph interrupt out of the process, and the answer back in.
 site_url: https://skamalj.github.io/agent-wait/
 repo_url: https://github.com/skamalj/agent-wait
 repo_name: skamalj/agent-wait

@@ -1,7 +1,7 @@
 [project]
 name = "agent-wait"
-version = "0.2.0"
-description = "Publish a LangGraph agent's interrupts to the outside world so a human can answer them -- from a queue, a Lambda, anywhere the process does not stick around."
+version = "0.2.1"
+description = "Get a LangGraph interrupt out of the process -- to a topic, a queue, a webhook, a table -- so anyone can answer it, and the answer back in."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

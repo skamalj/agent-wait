@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 — 2026-09-11
+
+Documentation only. The README and package description now say what the library is for
+without underselling it: LangGraph hands an interrupt to whatever called `invoke()` and
+stops there — there is no built-in way to get it to anyone else, or for anyone else to
+answer, regardless of whether the process sticks around. Also adds the
+[Writing an announcer](https://skamalj.github.io/agent-wait/writing-an-announcer/) guide.
+No code changes.
+
 ## 0.2.0 — 2026-09-11
 
 First public release.
