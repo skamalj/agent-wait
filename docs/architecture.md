@@ -36,8 +36,8 @@ arrives.
 
 ```python
 for item in result["__interrupt__"]:
-    question, policy = unwrap(item.value)
-    envelopes.append(build_envelope(thread_id, Question(item.id, question, policy)))
+    question, policy, source = unwrap(item.value)
+    envelopes.append(build_envelope(thread_id, Question(item.id, question, policy, source=source)))
 ```
 
 ## Why not `get_state()`
@@ -68,12 +68,12 @@ otherwise `{"action": "approve"}` runs it, `{"action": "approve", "args": {…}}
 with those, and anything else is returned in its place, unexecuted.
 
 **Async**: the wrapper *is* the publisher. It announces through the decorator's own
-announcers, with `question_id = sha256(thread | tool | args)`, and returns
+announcers, with `question_id = sha256(thread | function | args)`, and returns
 `{"status": "pending_approval", "question_id"}` without running the body. Nothing is
 parked; nothing is called after the run; the graph carries on. The decision arrives as a
 new message and the graph acts on it however it was designed to.
 
-The difference is *where* publishing happens — inside the tool at call time, or after
+The difference is *where* publishing happens — inside the function at call time, or after
 the run from the result — and that in async mode LangGraph remembers nothing. The
 envelope, the announcers and the recommended answer shape are identical.
 
@@ -81,7 +81,7 @@ envelope, the announcers and the recommended answer shape are identical.
 
 | | value | stable? |
 |---|---|---|
-| `question_id` | `Interrupt.id` (interrupt mode) or `sha256(thread\|tool\|args)` (async) | for as long as the question stands |
+| `question_id` | `Interrupt.id` (interrupt mode) or `sha256(thread\|function\|args)` (async) | for as long as the question stands |
 | `event_id` | a fresh ULID | no — one per publish |
 | `dedupe_key` | `"wait.created:<question_id>"` | yes |
 

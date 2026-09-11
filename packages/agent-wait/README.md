@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/agent-wait.svg)](https://pypi.org/project/agent-wait/)
 [![CI](https://github.com/skamalj/agent-wait/actions/workflows/ci.yml/badge.svg)](https://github.com/skamalj/agent-wait/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/skamalj/agent-wait/blob/main/LICENSE)
+[![Docs](https://img.shields.io/badge/docs-skamalj.github.io%2Fagent--wait-black.svg)](https://skamalj.github.io/agent-wait/)
 
 **Get a LangGraph interrupt out of the process, and the answer back in.**
 
@@ -28,6 +29,7 @@ pip install agent-wait-aws                     # SNS / SQS / EventBridge / Dynam
 
 ```python
 from agent_wait import WaitPolicy
+from langchain_core.tools import tool
 from langgraph_wait import hitl
 
 FINANCE = WaitPolicy(
@@ -48,6 +50,17 @@ def issue_refund(order_id: str, amount: int) -> str:
 Calling `issue_refund(...)` inside a run parks the graph on `{"function": "issue_refund",
 "args": {...}}`. On resume, `{"action": "approve"}` runs the body — optionally with edited
 `args` — and anything else is returned in its place, so a model sees why it did not run.
+
+The policy is what the asker declares about the question. Every field is published and
+none is enforced — the consumer acts on them:
+
+| field | meaning |
+|---|---|
+| `timeout` | ISO 8601 duration. Published as an absolute `expires_at`. |
+| `default` | What to send as the answer if nobody answers by then. |
+| `answer_ttl` | How long an answer stays usable after it is given. |
+| `allowed_actions` | Which answers are meaningful — the buttons to draw. |
+| `tags` | Routing hints; become SNS message attributes. |
 
 A node that needs the answer itself declares a `decision` parameter and always runs:
 
@@ -92,16 +105,20 @@ resume for a question the thread has moved past — so there is nothing to check
 ## Async mode — the thread does not park
 
 ```python
+from agent_wait_aws import DynamoDbAnnounce, SnsAnnounce
+
 @tool
 @hitl(FINANCE, mode="async", announce=[SnsAnnounce(topic_arn), DynamoDbAnnounce(table)])
 def issue_refund(order_id: str, amount: int) -> str: ...
 ```
 
 The decorator *is* the publisher: the call announces the question and returns
-`{"status": "pending_approval", "question_id": ...}` without running. The graph carries
-on; nothing is parked; nothing to call after the run. The decision arrives later as a new
-message and your graph acts on it. This is the mode for a single-thread channel like
-WhatsApp, where the approver is not the person on the thread.
+`{"status": "pending_approval", "question_id": "...", "function": "issue_refund"}`
+without running the body. The graph carries on; nothing is parked; nothing to call after
+the run. The decision arrives later as a new message and your graph acts on it. This is
+the mode for a single-thread channel like WhatsApp, where the approver is not the person
+on the thread — and since nothing is parked, LangGraph remembers nothing about the
+question; the `DynamoDbAnnounce` row (or whatever you keep) is the only record.
 
 ## What goes out
 
@@ -184,7 +201,7 @@ interrupting tool its own node. Pinned by a test that fails if LangGraph changes
 packages/agent-wait        core: Question, WaitPolicy, the envelope, publish(), announcers. No deps.
 packages/langgraph-wait    @hitl and publish_interrupts(). The only LangGraph import.
 packages/agent-wait-aws    four announce adapters, and a CDK stack for the example.
-examples/refund_agent      a graph and a host, deployed to Lambda behind SQS.
+examples/refund_agent      a graph and a host, written for Lambda behind SQS.
 docs/                      message contract, architecture, announcer guide, consumer guide.
 ```
 

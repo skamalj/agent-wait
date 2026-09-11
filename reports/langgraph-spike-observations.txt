@@ -5,8 +5,8 @@ they are labelled <id-A>, <id-B>, ... in first-seen order so that identical
 behaviour records as identical bytes. Everything else is as observed.
 
 == PARALLEL: two interrupts in one superstep ==
-  result['__interrupt__']  = [('<id-A>', {'which': 'a'}), ('<id-B>', {'which': 'b'})]
-  get_state().tasks        = [('na', ['<id-A>'], None), ('nb', ['<id-B>'], None)]
+  result['__interrupt__']  = [('<id-A>', {'which': 'b'}), ('<id-B>', {'which': 'a'})]
+  get_state().tasks        = [('na', ['<id-B>'], None), ('nb', ['<id-A>'], None)]
   get_state().next         = ('na', 'nb')
   checkpoint_id            = <id-C>
   side-effect log          = []

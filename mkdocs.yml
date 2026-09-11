@@ -46,8 +46,8 @@ markdown_extensions:
 nav:
   - Overview: index.md
   - Message formats: message-formats.md
+  - Integrating a consumer: integrating-a-consumer.md
   - Writing an announcer: writing-an-announcer.md
   - Architecture: architecture.md
-  - Integrating a consumer: integrating-a-consumer.md
   - Migrating: migrating.md
   - Changelog: changelog.md

@@ -43,7 +43,7 @@ your queue, your webhook, or as a row in your table.
 | `type` | string | Always `wait.created`. |
 | `event_id` | ULID | Fresh on every publish. For logs and tracing. **Not** the deduplication key. |
 | `thread_id` | string | The agent's conversation identity. |
-| `question_id` | string | The question's identity. In interrupt mode it is LangGraph's `Interrupt.id`; in async mode it is derived from thread + tool + args. Stable across republishes. |
+| `question_id` | string | The question's identity. In interrupt mode it is LangGraph's `Interrupt.id`; in async mode it is `sha256(thread_id | function | args)`. Stable across republishes. |
 | `question` | any | From `@hitl`: `{"function": name, "args": {...}}`, the call that is waiting. From a bare `interrupt(value)`: `value` as is. Opaque to every adapter. |
 | `allowed_actions` | string[] | Which answers are meaningful. Advisory. |
 | `expires_at` | RFC 3339 UTC or null | When the asker considers the question stale. Advisory. Measured from publish time unless the caller supplied `asked_at`. |
@@ -147,7 +147,21 @@ anything else you keep) is it.
 
 ---
 
-## 5. The DynamoDB row
+## 5. What an async `@hitl` call returns
+
+In `mode="async"` the decorated function does not run. The call returns this to whatever
+called it — the node, or the model via the tool result:
+
+```json
+{ "status": "pending_approval", "question_id": "7f3e…", "function": "issue_refund" }
+```
+
+The `question_id` is the same one on the envelope, so a graph that keeps its own record
+can match the decision when it arrives.
+
+---
+
+## 6. The DynamoDB row
 
 `DynamoDbAnnounce` writes one item per question and never touches it again:
 
