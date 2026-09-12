@@ -22,7 +22,7 @@ class RedisAnnounce(BaseAnnounce):
 ```
 
 Pass it wherever announcers go — `publish_interrupts(result, thread_id, [RedisAnnounce(r)])`
-or `@hitl(policy, mode="async", announce=[RedisAnnounce(r)])` — and you are done.
+or `@wait(policy, mode="async", announce=[RedisAnnounce(r)])` — and you are done.
 
 `BaseAnnounce` gives you three things so you do not have to think about them:
 

@@ -44,12 +44,12 @@ your queue, your webhook, or as a row in your table.
 | `event_id` | ULID | Fresh on every publish. For logs and tracing. **Not** the deduplication key. |
 | `thread_id` | string | The agent's conversation identity. |
 | `question_id` | string | The question's identity. In interrupt mode it is LangGraph's `Interrupt.id`; in async mode it is `sha256(thread_id | function | args)`. Stable across republishes. |
-| `question` | any | From `@hitl`: `{"function": name, "args": {...}}`, the call that is waiting. From a bare `interrupt(value)`: `value` as is. Opaque to every adapter. |
+| `question` | any | From `@wait`: `{"function": name, "args": {...}}`, the call that is waiting. From a bare `interrupt(value)`: `value` as is. Opaque to every adapter. |
 | `allowed_actions` | string[] | Which answers are meaningful. Advisory. |
 | `expires_at` | RFC 3339 UTC or null | When the asker considers the question stale. Advisory. Measured from publish time unless the caller supplied `asked_at`. |
 | `default` | any or null | What the asker said to assume if nobody answers. Advisory. |
 | `answer_ttl` | ISO 8601 duration or null | How long an answer stays usable after it is given. Advisory. |
-| `source` | object or null | `{"function": name}` for a `@hitl` question; null for a bare interrupt. |
+| `source` | object or null | `{"function": name}` for a `@wait` question; null for a bare interrupt. |
 | `reply_to` | object or null | A hint for where to send the answer, if the host chose to publish one. Null otherwise. |
 | `reply_with` | object | A filled-in reply. Copy it, set `answer`, send it to the agent's entry point. |
 | `correlation` | object or null | `{"provider": ..., "id": ...}` when the question is tied to an external job. |
@@ -92,14 +92,14 @@ should expect, so that "is this message a new request or an answer?" is one line
 |---|---|---|
 | `thread_id` | required | Which conversation. Copied from `reply_with`. |
 | `question_id` | required | Which question. Copied from `reply_with`. **Its presence is what makes this an answer.** |
-| `answer` | required | Received **verbatim** by the `@hitl` function. Any JSON. |
+| `answer` | required | Received **verbatim** by the `@wait` function. Any JSON. |
 | `valid_until` | optional | The answer's own expiry, if the approver wants one. |
 
-`answer` is whatever the `@hitl` function expects. Nothing is merged into it or added to
+`answer` is whatever the `@wait` function expects. Nothing is merged into it or added to
 it. For a function without a `decision` parameter, `{"action": "approve"}` runs it,
 `{"action": "approve", "args": {...}}` runs it with those arguments, and anything else is
 returned in its place. For a function with a `decision` parameter (or whatever name
-`@hitl(decision=...)` was given), the whole `answer` arrives there, whatever it is.
+`@wait(decision=...)` was given), the whole `answer` arrives there, whatever it is.
 
 ---
 
@@ -128,7 +128,7 @@ publish_interrupts(result, message["thread_id"], announce)
 ```
 
 That is the whole host. LangGraph loads the thread's latest checkpoint by `thread_id`,
-re-runs the interrupted node from the top, and the `@hitl` call receives `answer`.
+re-runs the interrupted node from the top, and the `@wait` call receives `answer`.
 
 Facts worth knowing, none of which the host has to code for:
 
@@ -147,7 +147,7 @@ anything else you keep) is it.
 
 ---
 
-## 5. What an async `@hitl` call returns
+## 5. What an async `@wait` call returns
 
 In `mode="async"` the decorated function does not run. The call returns this to whatever
 called it — the node, or the model via the tool result:

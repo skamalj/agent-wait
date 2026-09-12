@@ -2,7 +2,7 @@
 
 No Docker. `uv pip install --python-platform x86_64-manylinux2014` resolves Linux wheels
 from any host, which is all we need because the whole dependency tree here is pure
-Python. The three workspace packages and the example app are copied in from source, so
+Python. The library and the example app are copied in from source, so
 the bundle is exactly the code in this repository and not whatever was last published.
 
 `boto3` and `botocore` are deliberately left out: the Lambda Python 3.12 runtime ships a
@@ -33,13 +33,11 @@ RUNTIME_DEPENDENCIES = [
 ]
 
 SOURCE_TREES = [
-    ROOT / "packages" / "agent-wait" / "src" / "agent_wait",
-    ROOT / "packages" / "langgraph-wait" / "src" / "langgraph_wait",
-    ROOT / "packages" / "agent-wait-aws" / "src" / "agent_wait_aws",
+    ROOT / "src" / "agent_wait",
     ROOT / "examples" / "refund_agent",
 ]
 
-PRUNE = ["__pycache__", "*.dist-info", "*.pyc", "tests"]
+PRUNE = ["__pycache__", "*.dist-info", "*.pyc", "tests", "cdk"]
 
 
 def _force_remove(path: Path, attempts: int = 6) -> None:
@@ -95,7 +93,11 @@ def build(target: Path) -> Path:
     for tree in SOURCE_TREES:
         destination = target / tree.name
         print(f"copying {tree.relative_to(ROOT)} -> {destination.name}")
-        shutil.copytree(tree, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
+        shutil.copytree(
+            tree,
+            destination,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests", "cdk", "cdk.out"),
+        )
 
     # boto3 is provided by the runtime; shipping it again wastes a third of the limit.
     for name in ("boto3", "botocore", "s3transfer", "dateutil", "urllib3", "jmespath"):

@@ -6,15 +6,15 @@ failure in one is logged and contained without affecting the others or the run.
 
 ```python
 from agent_wait import WebhookAnnounce
-from agent_wait_aws import DynamoDbAnnounce, SnsAnnounce
-from langgraph_wait import hitl, publish_interrupts
+from agent_wait.aws import DynamoDbAnnounce, SnsAnnounce
+from agent_wait.langgraph import publish_interrupts, wait
 
 # after a run
 publish_interrupts(result, thread_id, announce=[SnsAnnounce(topic_arn), DynamoDbAnnounce(table)])
 
 
 # or on an async function
-@hitl(FINANCE, mode="async", announce=[WebhookAnnounce(url, secret=SECRET)])
+@wait(FINANCE, mode="async", announce=[WebhookAnnounce(url, secret=SECRET)])
 def issue_refund(order_id: str, amount: int) -> str: ...
 ```
 
@@ -22,7 +22,7 @@ Every shipped announcer puts `envelope.dedupe_key` — `"wait.created:<question_
 stable across republishes — wherever its backend has a natural key, so a redelivered
 question is one question, not two. `event_id` is fresh per publish and is never the key.
 
-## In `agent-wait` (no dependencies)
+## In the core (`pip install agent-wait`, no dependencies)
 
 ### `WebhookAnnounce`
 
@@ -65,7 +65,7 @@ InMemoryAnnounce()
 Appends `(transition, envelope)` to `.events`. For tests. `.of("created")`, `.last()`,
 `.clear()`.
 
-## In `agent-wait-aws` (boto3)
+## In `agent_wait.aws` (`pip install "agent-wait[aws]"`)
 
 ### `SnsAnnounce`
 
@@ -133,8 +133,15 @@ table.query(
 
 The adapter writes the row and **never touches it again**. Marking rows answered,
 sweeping overdue ones, or ignoring them is the host's — the library is not on the receive
-path, and this adapter is no exception. The CDK stack in the package creates the table
-and the index.
+path, and this adapter is no exception. The CDK stack under `examples/refund_agent/cdk`
+creates the table and the index.
+
+!!! warning "The write is an unconditional `PutItem`"
+    A republished question — a redelivered start message, an async tool called again with
+    the same arguments — **overwrites the row**, including any `status` the host wrote
+    into it. If the host uses this row as its ledger (open → answered → closed), it has to
+    gate republishing itself: read the row first, and skip `publish_interrupts` when the
+    row is already terminal. The adapter will not do that read, on purpose.
 
 ## Writing your own
 

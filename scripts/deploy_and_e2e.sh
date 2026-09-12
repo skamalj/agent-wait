@@ -16,7 +16,6 @@ cd "$ROOT"
 REGION="ap-south-1"
 STACK_NAME="agent-wait-poc"
 WAIT_TIMEOUT="PT2M"
-TIMEOUT_SECONDS=120
 SKIP_DEPLOY=0
 SKIP_TESTS=0
 DESTROY=0
@@ -27,7 +26,6 @@ while [[ $# -gt 0 ]]; do
     --region)          REGION="$2"; shift 2 ;;
     --stack)           STACK_NAME="$2"; shift 2 ;;
     --wait-timeout)    WAIT_TIMEOUT="$2"; shift 2 ;;
-    --timeout-seconds) TIMEOUT_SECONDS="$2"; shift 2 ;;
     --skip-deploy)     SKIP_DEPLOY=1; shift ;;
     --skip-tests)      SKIP_TESTS=1; shift ;;
     --destroy)         DESTROY=1; shift ;;
@@ -63,7 +61,7 @@ if [[ "$SKIP_DEPLOY" -eq 0 ]]; then
   uv run python scripts/build_lambda_bundle.py
 
   echo -e "\n== cdk deploy $STACK_NAME =="
-  ( cd "$ROOT/packages/agent-wait-aws/cdk" && \
+  ( cd "$ROOT/examples/refund_agent/cdk" && \
     npx --yes aws-cdk@2 deploy --require-approval never \
       -c "stackName=$STACK_NAME" -c "region=$REGION" -c "waitTimeout=$WAIT_TIMEOUT" \
       -c "bundlePath=$BUNDLE" )
@@ -72,12 +70,12 @@ fi
 if [[ "$SKIP_TESTS" -eq 0 ]]; then
   echo -e "\n== end-to-end scenarios =="
   uv run python examples/refund_agent/demo_scenarios.py \
-    --stack "$STACK_NAME" --region "$REGION" --timeout-seconds "$TIMEOUT_SECONDS" || e2e_status=$?
+    --stack "$STACK_NAME" --region "$REGION" || e2e_status=$?
 fi
 
 if [[ "$DESTROY" -eq 1 ]]; then
   echo -e "\n== tearing down =="
-  ( cd "$ROOT/packages/agent-wait-aws/cdk" && \
+  ( cd "$ROOT/examples/refund_agent/cdk" && \
     npx --yes aws-cdk@2 destroy --force \
       -c "stackName=$STACK_NAME" -c "region=$REGION" -c "bundlePath=$BUNDLE" )
 fi

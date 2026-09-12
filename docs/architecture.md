@@ -10,7 +10,7 @@ flowchart LR
         R -->|yes| RS["graph.invoke(Command(resume=...), cfg)"]
         I --> G[["LangGraph"]]
         RS --> G
-        G -.->|"a @hitl call parks the node"| CP[(checkpointer)]
+        G -.->|"a @wait call parks the node"| CP[(checkpointer)]
         G --> P["publish_interrupts(result, thread_id, announce)"]
     end
     P -->|"one envelope per Interrupt"| A[["announcers"]]
@@ -28,30 +28,70 @@ carries `__interrupt__`: a sequence of `Interrupt` objects. Per the LangGraph re
 an `Interrupt` has two attributes — `value` (what was passed to `interrupt()`) and `id`.
 `ns`, `when` and `resumable` were removed in 0.6.
 
-That is the entire input. `@hitl` packed the question and the policy into `value`;
+That is the entire input. `@wait` packed the question and the policy into `value`;
 `id` is what the answer has to carry back; `thread_id` is the one thing the result does
 not echo, so the host passes it. No graph handle, no `get_state()`, no checkpointer —
 the library never touches persistence, and it is not in the process when the answer
 arrives.
 
 ```python
-for item in result["__interrupt__"]:
-    question, policy, source = unwrap(item.value)
-    envelopes.append(build_envelope(thread_id, Question(item.id, question, policy, source=source)))
+for interrupt_id, value in framework.interrupts_in(result):  # LangGraph: result["__interrupt__"]
+    question, policy, source = unpack(value)
+    envelopes.append(build_envelope(thread_id, Question(interrupt_id, question, policy, source=source)))
 ```
+
+## Interface and implementors
+
+The user-facing pieces — `@wait`, `publish_interrupts`, the envelope, the announcers — are
+written once in the core against a three-method interface, and each framework subpackage
+is one implementor of it:
+
+```python
+class Framework(ABC):
+    name: str
+    hidden_params: tuple[str, ...]  # injected params to keep out of the published args
+
+    def interrupt(self, value, call_args) -> Any: ...  # park on `value`; on resume, return the answer
+    def interrupts_in(self, result) -> list[tuple[str, Any]]: ...  # (id, value) from what invoke() returned
+    def current_thread_id(self, call_args) -> str: ...  # async mode only
+```
+
+`agent_wait.langgraph` is `LangGraphFramework` plus two lines of binding:
+
+```python
+wait = make_wait(LangGraphFramework())
+publish_interrupts = make_publish_interrupts(LangGraphFramework())
+```
+
+That is the whole subpackage. A user never sees the class; they import the bound names.
+The same split holds for announcers: `BaseAnnounce` is the interface, `agent_wait.aws`
+is implementors. Adding a framework or a provider is a subpackage and an extra in
+`pyproject.toml`, and nothing in the core changes.
+
+| | LangGraph (`[langgraph]`) | Strands (`[strands]`, planned) |
+|---|---|---|
+| `interrupt()` | `langgraph.types.interrupt(value)` | `tool_context.interrupt(name, reason=value)` |
+| `interrupts_in()` | `result["__interrupt__"]` → `(Interrupt.id, .value)` | `result.interrupts` when `stop_reason == "interrupt"` → `(Interrupt.id, .reason)` |
+| `current_thread_id()` | `get_config()["configurable"]["thread_id"]` | the agent's session id |
+| `hidden_params` | — | `tool_context` |
+| resume (host code) | `Command(resume={id: answer})` | `[{"interruptResponse": {"interruptId": id, "response": answer}}]` |
+
+The user's code is the same on both: `@wait(policy)` on the function,
+`publish_interrupts(result, thread_id, announce)` after the run, and one `if` on
+`question_id` when the answer comes back. Only the resume line is the framework's own.
 
 ## Two interrupt shapes, one envelope
 
 | raised by | `Interrupt.value` | published as |
 |---|---|---|
-| a `@hitl` call | `{"question": {"function", "args"}, "__wait__": policy, "__source__": …}` | one envelope, that policy |
+| a `@wait` call | `{"question": {"function", "args"}, "__wait__": policy, "__source__": …}` | one envelope, that policy |
 | bare `interrupt(value)` | `value` | one envelope, default policy |
 
 LangChain's `HumanInTheLoopMiddleware` raises a third shape — one interrupt for a whole
-batch of tool calls — and is **not supported**: `@hitl` on a tool the middleware also
+batch of tool calls — and is **not supported**: `@wait` on a tool the middleware also
 intercepts interrupts twice. It is one or the other, and this library is the other.
 
-## The two modes of `@hitl`
+## The two modes of `@wait`
 
 **Interrupt** (default): the wrapper raises the interrupt with `{"function", "args"}`
 before the body. The thread parks. `publish_interrupts` after the run announces it. If

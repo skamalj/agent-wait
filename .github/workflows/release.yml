@@ -1,7 +1,7 @@
 name: release
 
-# Publishes the three packages to PyPI when a v* tag is pushed, then proves the published
-# artefacts work by installing them from PyPI -- not from the build -- into a clean
+# Publishes agent-wait to PyPI when a v* tag is pushed, then proves the published
+# artefact works by installing them from PyPI -- not from the build -- into a clean
 # environment and running a smoke test that exercises the public API end to end.
 
 on:
@@ -25,13 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync
+      - run: uv sync --all-extras
       - run: uv run pytest
       - run: uv run ruff check . && uv run pyright
-      - run: |
-          uv build --package agent-wait --out-dir dist
-          uv build --package langgraph-wait --out-dir dist
-          uv build --package agent-wait-aws --out-dir dist
+      - run: uv build --out-dir dist
       - run: uvx twine check dist/*
       - uses: actions/upload-artifact@v4
         with:
@@ -51,14 +48,9 @@ jobs:
       - id: token
         run: echo "present=${{ secrets.PYPI_API_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
       # --check-url skips files already on the index, so re-running a tag (or tagging a
-      # version that was published by hand) is a no-op rather than a 400. The core
-      # package lands first because the other two depend on it.
+      # version that was published by hand) is a no-op rather than a 400.
       - if: steps.token.outputs.present == 'true'
-        run: uv publish --check-url https://pypi.org/simple/ dist/agent_wait-*
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-      - if: steps.token.outputs.present == 'true'
-        run: uv publish --check-url https://pypi.org/simple/ dist/langgraph_wait-* dist/agent_wait_aws-*
+        run: uv publish --check-url https://pypi.org/simple/ dist/*
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       - if: steps.token.outputs.present != 'true'
@@ -79,7 +71,7 @@ jobs:
           VERSION="${RELEASE_VERSION#v}"
           uv venv .smoke && . .smoke/bin/activate
           for i in $(seq 1 30); do
-            if uv pip install --no-cache "agent-wait==$VERSION" "langgraph-wait==$VERSION" "agent-wait-aws==$VERSION"; then break; fi
+            if uv pip install --no-cache "agent-wait[langgraph,aws]==$VERSION"; then break; fi
             [ "$i" = 30 ] && { echo "agent-wait==$VERSION never became installable from PyPI"; exit 1; }
             sleep 10
           done

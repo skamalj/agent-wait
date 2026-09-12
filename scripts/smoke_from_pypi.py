@@ -1,7 +1,7 @@
-"""Prove the *published* packages work: run in a clean venv with nothing but PyPI installs.
+"""Prove the *published* package works: run in a clean venv with nothing but PyPI installs.
 
     uv venv .smoke && . .smoke/bin/activate
-    uv pip install agent-wait langgraph-wait agent-wait-aws langchain
+    uv pip install "agent-wait[langgraph,aws]"
     python scripts/smoke_from_pypi.py
 
 Not an import check. Real graphs, both modes, every announcer, the round trip.
@@ -16,13 +16,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, TypedDict
 
-import agent_wait
-from agent_wait import InMemoryAnnounce, WaitPolicy, WebhookAnnounce, verify_signature
-from agent_wait_aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, SqsAnnounce
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
-from langgraph_wait import hitl, publish_interrupts
+
+import agent_wait
+from agent_wait import InMemoryAnnounce, WaitPolicy, WebhookAnnounce, verify_signature
+from agent_wait.aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, SqsAnnounce
+from agent_wait.langgraph import publish_interrupts, wait
 
 SECRET = b"smoke"
 PAID: list[str] = []
@@ -68,7 +69,7 @@ class FakeClient:
 POLICY = WaitPolicy(timeout="PT1H", default={"action": "reject"}, allowed_actions=("approve", "reject"))
 
 
-@hitl(POLICY)
+@wait(POLICY)
 def review(state: State, decision: Any = None) -> State:
     return {"decision": decision}
 
@@ -160,7 +161,7 @@ def main() -> None:
     print("async mode: the decorator publishes, the graph carries on")
     inbox = InMemoryAnnounce()
 
-    @hitl(POLICY, mode="async", announce=[inbox])
+    @wait(POLICY, mode="async", announce=[inbox])
     def big_transfer(account: str, amount: int) -> str:
         PAID.append(account)
         return "transferred"
@@ -182,7 +183,7 @@ def main() -> None:
     )
 
     server.shutdown()
-    print("\nsmoke test passed against the installed packages")
+    print("\nsmoke test passed against the installed package")
 
 
 if __name__ == "__main__":

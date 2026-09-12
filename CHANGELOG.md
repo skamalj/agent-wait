@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.0 — 2026-09-12
+
+**One package.** `langgraph-wait` and `agent-wait-aws` are folded into `agent-wait` as
+subpackages behind extras. `pip install agent-wait` is the framework-free core and
+depends on nothing; `agent-wait[langgraph]` adds `agent_wait.langgraph`;
+`agent-wait[aws]` adds `agent_wait.aws`. Importing a subpackage without its extra raises
+an `ImportError` that names the extra to install.
+
+**`@hitl` is `@wait`.** The decorator makes a function wait for something outside the
+process; a person is the common case, not the only one — a vendor callback, a payment
+processor, another agent are the same shape. The rename says what it does; the metadata
+still says "human-in-the-loop" first, because that is what people search for.
+
+**Interface and implementors.** `@wait` and `publish_interrupts` are now written once in
+the core against a three-method `Framework` interface (`interrupt`, `interrupts_in`,
+`current_thread_id`); `agent_wait.langgraph` is `LangGraphFramework` plus two lines of
+binding. Announcers keep the same split: `BaseAnnounce` in the core, providers as
+implementors. A `strands` extra follows the same pattern. Core exports `Framework`,
+`make_wait`, `make_publish_interrupts`, `question_id_for`.
+
+Migration is two lines: `from langgraph_wait import hitl, publish_interrupts` →
+`from agent_wait.langgraph import wait, publish_interrupts`; `from agent_wait_aws import …`
+→ `from agent_wait.aws import …`. The envelope, the answer shape, and every behaviour are
+unchanged; the decorated function's tag is `__agent_wait__`.
+
+The `langgraph-wait` and `agent-wait-aws` distributions are not updated past 0.4.1.
+
 ## 0.4.1 — 2026-09-11
 
 Documentation only, after review. A dedicated Announcers page with every shipped

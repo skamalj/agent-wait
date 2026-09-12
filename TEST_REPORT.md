@@ -1,179 +1,183 @@
-# TEST_REPORT — agent-wait v0.4.1
+# TEST_REPORT — agent-wait v0.5.0
 
-Supersedes the v0.3 report. Earlier reports are at their tags.
+Supersedes the v0.4.1 report. Earlier reports are at their tags.
 
 ## 0. Read this first
 
-**Two things in the library.** `@hitl` makes a function interruptible — on a tool the
-body runs only on approve; on a node with a `decision` parameter it always runs and gets
-the answer; in `mode="async"` the decorator publishes and returns pending without
-parking. `publish_interrupts(result, thread_id, announce)` after the run reads
-`result["__interrupt__"]` and hands envelopes to announcers. No graph handle, no state
-read, nothing received. `ask()` is gone. `HumanInTheLoopMiddleware` is documented as
-incompatible and not supported.
+**One package, two things in it.** `@wait` makes a function wait for an answer from
+outside the process — on a tool the body runs only on approve; on a node with a
+`decision` parameter it always runs and gets the answer; in `mode="async"` the decorator
+publishes and returns pending without parking. `publish_interrupts(result, thread_id,
+announce)` after the run reads what the framework returned and hands envelopes to
+announcers. No graph handle, no state read, nothing received.
 
-**Verified:** local unit and integration levels; every announcer against moto or a real
-local HTTP server; the smoke test against the built wheels from a clean venv. **Not
-verified:** the deployed AWS run (§5). The PyPI round trip is verified by the release
-workflow on every tag: install from the index into a clean Ubuntu venv, run the smoke test.
+**What changed in 0.5.** `langgraph-wait` and `agent-wait-aws` are subpackages of
+`agent-wait` behind extras (`[langgraph]`, `[aws]`); bare install is the dependency-free
+core. `@hitl` is renamed `@wait`. The decorator and `publish_interrupts` are written once
+against a three-method `Framework` interface; `agent_wait.langgraph` is one implementor.
+Nothing in the envelope, the answer shape, or the behaviour changed.
+
+**Verified:** every local level; the core contract against a stub framework with no
+LangGraph installed; the built wheel in a clean venv (bare = core only, guards name the
+extra, `[langgraph,aws]` runs the full smoke test); `cdk synth`; the deployed AWS run
+(§5). The PyPI round trip is verified by the release workflow on every tag.
 
 ---
 
 ## 1. Summary
 
-| | v0.3 | v0.4 |
+| | v0.4.1 | v0.5.0 |
 |---|---|---|
-| Ways to raise a question | `ask()`, `@hitl`, middleware batches | `@hitl` (interrupt or async); a bare `interrupt()` still publishes |
-| `langgraph_wait` public names | `ask`, `unwrap`, `WAIT_KEY`, `hitl`, `policy_for`, `question_id_for`, `questions_in`, `publish_interrupts` | `hitl`, `publish_interrupts`, `questions_in` |
-| `HumanInTheLoopMiddleware` | one envelope per batch | not supported; documented as incompatible |
-| Dev dependencies | + `langchain` | removed |
-| Tests | 133 | 125 |
-| Coverage | 98% | 98% |
+| Distributions | `agent-wait`, `langgraph-wait`, `agent-wait-aws` | `agent-wait` with extras `[langgraph]`, `[aws]`, `[all]` |
+| Bare install | core | core, no dependencies |
+| Decorator | `@hitl` | `@wait` |
+| Imports | `from langgraph_wait import hitl, publish_interrupts` / `from agent_wait_aws import …` | `from agent_wait.langgraph import wait, publish_interrupts` / `from agent_wait.aws import …` |
+| Framework coupling | `langgraph_wait` written directly against LangGraph | `Framework` ABC in core; `LangGraphFramework` + two bindings |
+| Core exports added | — | `Framework`, `make_wait`, `make_publish_interrupts`, `question_id_for` |
+| pyright strict scope | core only | all of `src/` (AWS announcers now typed) |
+| Tests | 125 | 139 (+11 core contract, +3 moved/renamed) |
+| Coverage | 98% | 99% |
+| AWS e2e | not run | run, see §5 |
 
 ## 2. What was built
 
-**`agent_wait`** — `Question`, `WaitPolicy` (+ `answer_ttl`), `WaitEnvelope`
-(+ `answer_ttl`, `source`), `build_envelope()`, `publish()`, `BaseAnnounce` and the four
-core announcers. No dependencies. pyright strict.
+**`agent_wait` (core, no deps).** `WaitPolicy`, `Question`, `WaitEnvelope`,
+`build_envelope()`, `publish()`, `BaseAnnounce` + `Webhook`/`Log`/`InMemory`/`Composite`
+announcers — unchanged. New: `framework.Framework` (abstract: `interrupt`,
+`interrupts_in`, `current_thread_id`; `hidden_params` for framework-injected parameters)
+and `wait.py` (`pack`/`unpack`, `question_id_for`, `make_wait`, `make_publish_interrupts`).
 
-**`langgraph_wait`** — `@hitl(policy, mode=, announce=, decision=)`,
-`publish_interrupts(result, thread_id, announce)`, `questions_in(result)`. Two interrupt
-shapes: a `@hitl` call, and a bare `interrupt()`.
+**`agent_wait.langgraph` (`[langgraph]`).** `LangGraphFramework`: `interrupt` →
+`langgraph.types.interrupt`; `interrupts_in` → `result["__interrupt__"]` as
+`(Interrupt.id, Interrupt.value)`; `current_thread_id` → `get_config()`. Then
+`wait = make_wait(...)`, `publish_interrupts = make_publish_interrupts(...)`,
+`questions_in`. Import without LangGraph raises `ImportError: … pip install
+'agent-wait[langgraph]'`.
 
-**`agent_wait_aws`** — SNS, SQS, EventBridge, DynamoDB announcers. `DynamoDbAnnounce`
-writes one row per question and never reads it.
+**`agent_wait.aws` (`[aws]`).** `SnsAnnounce`, `SqsAnnounce`, `EventBridgeAnnounce`,
+`DynamoDbAnnounce` — unchanged behaviour, relative imports, strict-typed. Same guard for
+boto3.
 
-**`examples/refund_agent`** — the graph, a host that is one `if` plus two calls, and
-three deployed scenarios (not run; see §5).
+**Elsewhere.** CDK stack moved to `examples/refund_agent/cdk`; the bundle script copies
+`src/agent_wait` and the example; CI/release workflows build one wheel and smoke-install
+`agent-wait[langgraph,aws]==VERSION` from PyPI; metadata summary and keywords lead with
+human-in-the-loop for discoverability while the name stays `agent-wait`.
 
-## 3. What was removed since 0.3, and why
+## 3. What was removed since 0.4.1, and why
 
-| Removed | Reason |
-|---|---|
-| `ask()` | `@hitl` makes the function interruptible; a second way to say the same thing |
-| `HumanInTheLoopMiddleware` shape, the policy registry, `policy_for()` | The middleware interrupts before the tool; `@hitl` inside it. Both on one tool is two interrupts. Carrying a third shape to half-bridge that is complexity for a case we tell people not to do |
-| `langchain` dev dependency | only the middleware tests needed it |
-
-### Removed since 0.2
-
-| Removed | Reason |
-|---|---|
-| `WaitPublisher`, `FrameworkAdapter`, `LangGraphAdapter` | A wrapper the host had to learn, to do one thing |
-| `pending()` | Read `get_state()`. Duplicate resumes are no-ops in LangGraph (verified), so it guarded nothing |
-| `republish()` | A redelivered start re-runs the thread and gets the same `Interrupt.id` back; publishing again is the same as publishing |
-| `is_answer()`, `resume_command()` | Two lines, documented instead |
-| `wait.resumed` | Needed a before/after state diff; the library no longer reads state |
-| `DynamoDbAnnounce.get/close/overdue` | Added and removed within this release: a ledger on one adapter is the receive path by the back door. On SQS-only there is no ledger, and the library must not assume one |
+- **Two distributions.** Three coupled packages were a pin-drift hazard (bitten once at
+  0.3.0) and a naming problem per framework × provider. `langgraph-wait` and
+  `agent-wait-aws` stay on PyPI at 0.4.1 and are not updated.
+- **The name `hitl`.** A person is the common answerer, not the only one; "wait" is the
+  base concept and the package was already called that. Discoverability moved to metadata.
+- **Direct LangGraph calls inside the decorator.** Replaced by the `Framework` interface
+  so a second framework is a subpackage and an extra, not a fork of the decorator.
 
 ## 4. How it was tested
 
-**Core (36 tests).** `publish()` and `build_envelope()` against `Question`s: one envelope
-per question to every announcer; nothing in, nothing out; the documented field set
-asserted key by key; `reply_to` optional; `expires_at` from `asked_at` when known and
-from publish time otherwise; `dedupe_key` stable across publishes with fresh `event_id`s;
-a raising announcer contained. `BaseAnnounce`, `LogAnnounce` (question never at INFO),
-`WebhookAnnounce` against a real `http.server` — headers, body, HMAC verification, a 503
-and an unreachable host both becoming log lines.
+**Core (47 tests).** As before for `publish()`, `build_envelope()`, the envelope field
+set, `dedupe_key`, the announcers (webhook against a real `http.server`). New
+`test_framework.py` (11): a stub `Framework` that parks by raising — `@wait` packs
+`{function, args}` with `hidden_params` and the decision parameter removed; approve runs
+with original or edited args; anything else is returned unexecuted; a `decision`
+parameter always runs; async publishes through its own announcers with the deterministic
+id and parks nothing; `announce=` required; `publish_interrupts` reads only what
+`interrupts_in` returns; a bare value gets the default policy; `questions_in` exposed;
+and importing `agent_wait.langgraph` with LangGraph hidden raises an error naming the extra.
 
-**LangGraph (46 tests).**
-- `publish_interrupts` against real `graph.invoke()` results: the `@hitl` shape with
-  policy and `source`; bare `interrupt()`; no interrupt; parallel nodes; a `stream()`
-  chunk; the round trip through `reply_with` with the answer verbatim.
-- `@hitl` on a tool: parks and publishes `{function, args}` with `source`; approve runs;
-  approve with edited args runs with them; reject returns the answer in place of the
-  body. On a node: a `decision` parameter means it always runs and receives the answer,
-  approve or not; the parameter name is configurable. Under `@tool`: name, description
-  and args survive `functools.wraps`. Async: publishes through the decorator's own
-  announcers, returns pending, the next node runs in the same invoke, nothing parked;
-  deterministic ids across calls and distinct across threads; `announce=` required at
-  decoration time; `publish_interrupts` afterwards is a no-op.
-- Integration (refund agent, in-memory and SQLite checkpointers): a host of one `if`;
-  duplicate answer → one refund; different answer after the first → first stands;
-  the consumer sending `default` as an ordinary answer; parallel; subgraph.
-- The spike: 12 recorded observations against 1.2.11, byte-stable artifact.
+**LangGraph (39 tests).** `test_wait.py` (ex-`test_hitl.py`), `test_publish_interrupts.py`,
+`test_integration_refund.py` (in-memory and SQLite checkpointers, host of one `if`,
+duplicate answer → one refund), the spike (12 recorded observations against 1.2.11) —
+all unchanged in substance, on the new imports.
 
-**AWS-local (29 tests).** All four announcers over moto; the DynamoDB row shape; the
-GSI query; overwrite on republish; the example's checkpointer.
+**AWS-local (29 tests).** Four announcers over moto; the DynamoDB row shape; the GSI
+query; overwrite on republish; the example's checkpointer.
+
+**Wheel in a clean venv.** `uv build`, then in a fresh venv outside the repo: bare
+install imports the core with no `langgraph`/`boto3` present and both subpackages raise
+the documented `ImportError`; `[langgraph,aws]` then passes `scripts/smoke_from_pypi.py`
+end to end (both modes, every announcer, signed webhook, the answer round trip).
+
+**Docs.** Every python fence in README and `docs/` parsed and every `agent_wait`/
+`langgraph` import resolved by a script; stale vocabulary (`hitl`, `langgraph_wait`,
+`agent_wait_aws`, `packages/`) rejected. `mkdocs build --strict` clean.
 
 ### Results
 
 ```
-125 passed, 4 skipped (the e2e level, opt-in)
+139 passed, 4 skipped (the e2e level, opt-in)
 ruff check      clean
 ruff format     clean
-pyright strict  0 errors
-coverage        98% (497 statements, 9 missed)
+pyright strict  0 errors (src/ — core, langgraph, aws)
+coverage        99% (513 statements, 7 missed)
+cdk synth       ok (examples/refund_agent/cdk)
+wheel smoke     ok (bare = core only; [langgraph,aws] full smoke)
+mkdocs --strict ok
 ```
 
-## 5. What is not verified
+## 5. The deployed AWS run
 
-**The deployed AWS run.** `examples/refund_agent/demo_scenarios.py` is rewritten for 0.3
-(three scenarios; the consumer decides the deadline in B) and has not been run against a
-real account. The stack synthesises; the bundle builds. What only a deployment settles:
-`DynamoDbAnnounce` against real DynamoDB, the Lambda's IAM grants, and the SQS
-redelivery paths under a real queue.
+Run on 2026-09-12 from the owner's SSO session, `ap-south-1`, stack `agent-wait-poc`
+(tag `project=agent-wait`), via `scripts/deploy_and_e2e.sh --destroy`: local suite →
+bundle → `cdk deploy` → `examples/refund_agent/demo_scenarios.py` → `cdk destroy`. The
+stack is a Lambda running the refund graph behind an SQS queue (+ DLQ), a DynamoDB
+checkpoint table, a DynamoDB approvals table (`DynamoDbAnnounce`), and an SNS topic
+(`SnsAnnounce`) with a queue subscribed so the script can read what was announced.
 
-**Async mode with a real model.** The tag is exercised by calling the tool directly
-inside a node. "The model sees pending and says something sensible" needs a model.
+```
+15 / 15 checks passed              reports/e2e-20260912T093158Z.json
+A  park → answer → resume      the question was announced (SNS) and is a row in the
+                                approvals table; no refund before the answer; exactly one
+                                refund after it; the same answer again, a different
+                                answer, and an answer for an unknown question all run
+                                nothing — still exactly one refund
+B  nobody answers               expires_at is an absolute instant; the default
+                                {"action": "reject", ...} is published with it; the
+                                consumer sends the default as an ordinary answer → no
+                                refund; a late approval changes nothing
+C  a different first answer     the refund happened once; a second answer runs nothing
+Z  DLQ                          empty
+stack destroyed; no agent-wait queues, topics, tables, functions or log groups remain
+```
 
-## 6. Deviations
+What only this level settles, and now does: `DynamoDbAnnounce` against real DynamoDB
+(the row is there with the documented keys), the Lambda's IAM grants, SQS redelivery
+under a real queue, and the host's one `if` on `question_id` end to end. Two runs before
+the passing one did not reach the scenarios (a stale `cdk.out` copied into the bundle;
+a stale `--timeout-seconds` flag in the deploy script) — both fixed, both torn down.
 
-1. **Two guards were dropped from the host, not moved.** v0.2's router checked
-   `pending()` before resuming and before re-invoking a parked thread. A probe showed
-   LangGraph ignores a `Command(resume=…)` for a question the thread has moved past — it
-   re-runs no node and returns the state — and that a redelivered start reproduces the
-   same `Interrupt.id`. Both guards were guarding against things that do not happen. The
-   facts are asserted in `test_integration_refund.py` rather than coded around.
+## 6. What is not verified
 
-2. **`get/close/overdue` on `DynamoDbAnnounce` were added and then removed** in this
-   release, at the owner's direction. A ledger reachable only through one announcer is a
-   receive-side dependency in disguise; a host on SQS alone would have nothing. The
-   adapter writes the row and stops. The row shape and the `by_status` GSI are documented
-   so a host can build its own ledger if it wants one.
+**Async mode with a real model.** The decorator is exercised by calling the tool
+directly inside a node. "The model sees pending and says something sensible" needs a model.
 
-3. **The example host lost its answer checks** for the same reason. It is one `if` and
-   two calls. The recommended answer shape and the three facts a host can rely on are in
-   `message-formats.md` §4.
+**A second framework.** The `Framework` interface is exercised by the stub and by
+LangGraph. Strands is designed against (its `tool_context.interrupt`, per-tool-call ids,
+`result.interrupts`) but not written; the docs say "planned".
 
-4. **`expires_at` is measured from publish time** unless the caller supplies
-   `asked_at`. `Interrupt` carries no timestamp, and reading the checkpoint for one would
-   reintroduce `get_state()`. Documented; a republished question therefore gets a later
-   deadline. The v0.2 "drift" fix required state; v0.3 accepts the drift and says so.
+## 7. Deviations
 
-5. **Async announcers are decorator-only.** A first cut also read them from
-   `config["configurable"]["announce"]`; removed. One place, checked at decoration time,
-   so a missing announcer fails at import rather than three days later in a Lambda.
+1. **Bare install is the core, not everything.** The owner asked whether one package
+   should install all frameworks and providers; my recommendation was that a bare install
+   pull nothing, so a LangGraph user never carries boto3 and vice versa. Agreed.
 
-6. **`langchain >= 1.0` is a dev dependency only**, for the middleware tests.
-   `langgraph_wait` recognises the `HITLRequest` shape structurally and does not import
-   `langchain`.
+2. **AWS announcers came under strict pyright.** They were outside the old `include`.
+   Bringing them in cost a handful of `Any` annotations on injected clients (a caller may
+   hand in any client-shaped object) and one `pyright: ignore` per `boto3.client(...)`
+   call, because the stubs' overloads return `Unknown` for services not installed.
 
-7. **The spike's over-report finding is kept but no longer load-bearing.** The library
-   reads `result["__interrupt__"]`, which does not over-report. The observation stays in
-   the artifact for anyone who does read state, with the wording updated.
+3. **The bundle script excludes `cdk/`.** With the CDK app now inside the example, the
+   first bundle build copied a stale `cdk.out` into the zip and hit Windows path limits.
+   `cdk` and `cdk.out` are pruned; that is the only reason the first deploy attempt
+   failed, before anything was created.
 
-8. **`ask()` removed and the middleware dropped, at the owner's direction.** The
-   middleware bridge had a hole the owner spotted before I did: `@hitl` on a tool the
-   middleware intercepts would interrupt twice, once by each. The tests had not caught it
-   because they registered the policy without replacing the tool's function. Rather than
-   add a third mode to paper over it, the whole bridge went. `question` is now always
-   `{function, args}` from `@hitl`, which is less flexible than a hand-built question and
-   more useful to an approver, since it says exactly which call is waiting.
+4. **`verify_docs.py` stale-word check narrowed** from `republish` to `republish(` /
+   `.republish` — the English word is legitimately in four pages; the removed method is
+   what the check is for.
 
-9. **The smoke test caught its own mistake.** Its `review(s, decision=None)` named the
-   state parameter `s`, so `question.args` had key `s`, not `state`. That is the rule
-   working — `args` keys are the function's real parameter names — and the test was wrong.
+5. **Deviations 1–10 of the 0.4.1 report** stand and are not repeated here.
 
-10. **0.4.1 is docs only, after the owner's review of the site.** Five changes: the
-    configurable `decision` name shown beside its example; a dedicated Announcers page,
-    taking the DynamoDB row shape out of the message contract where it did not belong; the
-    "without subclassing" path removed from the announcer guide (one way to write one),
-    and the test that exercised it removed so the code does not advertise what the docs
-    do not; the `get_state()` aside removed from the architecture page; the migrating page
-    removed, since nobody has migrated. Every python block in the docs is parsed and every
-    import resolved by a script before publishing.
+## 8. Open questions
 
-## 7. Open questions
-
-None for the library. Whether to deploy and run the three AWS scenarios before calling
-0.3.0 verified end to end is the owner's call, as before.
+None for the library. Whether to yank `langgraph-wait` and `agent-wait-aws` 0.4.1 from
+PyPI or leave them as history is the owner's call; they have no downloads.

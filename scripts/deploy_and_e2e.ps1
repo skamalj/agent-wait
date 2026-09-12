@@ -13,7 +13,6 @@ param(
     [string]$Region = "ap-south-1",
     [string]$StackName = "agent-wait-poc",
     [string]$WaitTimeout = "PT2M",
-    [int]$TimeoutSeconds = 120,
     [switch]$SkipDeploy,
     [switch]$SkipTests,
     [switch]$Destroy
@@ -45,7 +44,7 @@ if (-not $SkipDeploy) {
     if ($LASTEXITCODE -ne 0) { throw "Bundle build failed." }
 
     Write-Host "`n== cdk deploy $StackName ==" -ForegroundColor Cyan
-    Push-Location "$Root\packages\agent-wait-aws\cdk"
+    Push-Location "$Root\examples\refund_agent\cdk"
     try {
         npx --yes aws-cdk@2 deploy --require-approval never `
             -c stackName=$StackName -c region=$Region -c waitTimeout=$WaitTimeout `
@@ -57,13 +56,13 @@ if (-not $SkipDeploy) {
 if (-not $SkipTests) {
     Write-Host "`n== end-to-end scenarios ==" -ForegroundColor Cyan
     uv run python examples/refund_agent/demo_scenarios.py `
-        --stack $StackName --region $Region --timeout-seconds $TimeoutSeconds
+        --stack $StackName --region $Region
     $e2e = $LASTEXITCODE
 } else { $e2e = 0 }
 
 if ($Destroy) {
     Write-Host "`n== tearing down ==" -ForegroundColor Cyan
-    Push-Location "$Root\packages\agent-wait-aws\cdk"
+    Push-Location "$Root\examples\refund_agent\cdk"
     try {
         npx --yes aws-cdk@2 destroy --force `
             -c stackName=$StackName -c region=$Region -c bundlePath="$Root\build\lambda"

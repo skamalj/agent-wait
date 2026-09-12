@@ -2,7 +2,7 @@
 
     load_order -> (auto_approve | review) -> (issue_refund | notify_customer) -> END
 
-`review` is a `@hitl` node: calling it parks the graph on a question for finance. That
+`review` is a `@wait` node: calling it parks the graph on a question for finance. That
 is the entire integration -- one decorator, on the node where the decision belongs. The
 graph has no idea where the answer will come from, and would run identically in a
 notebook, on a laptop, or on Lambda behind SQS. Small amounts route around it.
@@ -16,10 +16,11 @@ from __future__ import annotations
 import os
 from typing import Any, TypedDict
 
-from agent_wait import WaitPolicy
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph_wait import hitl
+
+from agent_wait import WaitPolicy
+from agent_wait.langgraph import wait
 
 PAYMENTS_CALLED: list[str] = []
 """The side effect that must never happen twice."""
@@ -62,7 +63,7 @@ def auto_approve(state: RefundState) -> RefundState:
     return {"decision": {"action": "approve", "by": "policy:auto"}}
 
 
-@hitl(FINANCE)
+@wait(FINANCE)
 def review(state: RefundState, decision: dict[str, Any] | None = None) -> RefundState:
     """Parks the graph. Runs only once the answer is in -- `decision` is it, verbatim."""
     return {"decision": decision or {}}

@@ -1,45 +1,89 @@
 [project]
-name = "agent-wait-workspace"
-version = "0.4.1"
-description = "Workspace root for agent-wait (not published)."
+name = "agent-wait"
+version = "0.5.0"
+description = "Human-in-the-loop for LangGraph agents -- and anything else a run has to wait for. Get the interrupt out of the process (SNS, SQS, EventBridge, DynamoDB, webhook) with everything needed to answer it; get the answer back in."
+readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "agent-wait",
-    "langgraph-wait",
-    "agent-wait-aws",
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kamaljeet Singh", email = "skamalj@gmail.com" }]
+keywords = [
+    "human-in-the-loop",
+    "hitl",
+    "approval",
+    "langgraph",
+    "langchain",
+    "agents",
+    "interrupt",
+    "durable",
+    "serverless",
+    "lambda",
+    "sqs",
+    "sns",
+    "eventbridge",
+    "dynamodb",
+    "webhook",
+    "callback",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = []
 
-[tool.uv]
-package = false
+[project.optional-dependencies]
+langgraph = ["langgraph>=1.2,<2"]
+aws = ["boto3>=1.35"]
+all = ["agent-wait[langgraph,aws]"]
 
-[tool.uv.workspace]
-members = ["packages/*"]
+[project.urls]
+Homepage = "https://skamalj.github.io/agent-wait/"
+Documentation = "https://skamalj.github.io/agent-wait/"
+Source = "https://github.com/skamalj/agent-wait"
+Issues = "https://github.com/skamalj/agent-wait/issues"
+Changelog = "https://github.com/skamalj/agent-wait/blob/main/CHANGELOG.md"
 
-[tool.uv.sources]
-agent-wait = { workspace = true }
-langgraph-wait = { workspace = true }
-agent-wait-aws = { workspace = true }
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_wait"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agent_wait", "README.md", "LICENSE"]
 
 [dependency-groups]
 dev = [
+    "agent-wait[all]",
     "pytest>=8.3",
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "pyright>=1.1.380",
-    "moto[dynamodb,sqs,sns,events,scheduler]>=5.0",
-    "boto3>=1.35",
-    "boto3-stubs[dynamodb,sqs,sns,events,scheduler,secretsmanager]>=1.35",
-    "langgraph>=1.2,<2",
+    "moto[dynamodb,sqs,sns,events]>=5.0",
+    "boto3-stubs[dynamodb,sqs,sns,events]>=1.35",
     "langgraph-checkpoint-sqlite>=2.0",
     "aws-cdk-lib>=2.160",
     "constructs>=10.3",
 ]
 
+[tool.uv.sources]
+agent-wait = { workspace = true }
+
+[tool.uv.workspace]
+members = ["."]
+
 [tool.pytest.ini_options]
-testpaths = ["packages/agent-wait/tests", "packages/langgraph-wait/tests", "packages/agent-wait-aws/tests", "examples"]
+testpaths = ["tests", "examples"]
 addopts = "-q --strict-markers"
+norecursedirs = ["cdk.out", "build", ".venv", "reference"]
 markers = [
-    "conformance: correctness rules from REQUIREMENTS section 10",
     "e2e: requires real AWS; opt in with AGENT_WAIT_E2E=1",
     "spike: empirical probes of LangGraph behaviour",
 ]
@@ -48,17 +92,17 @@ filterwarnings = ["ignore::DeprecationWarning"]
 [tool.ruff]
 line-length = 110
 target-version = "py312"
-extend-exclude = ["reference", "packages/agent-wait-aws/cdk/cdk.out"]
+extend-exclude = ["reference", "cdk.out"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["B008", "RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["E501"]
+"tests/**" = ["E501"]
 
 [tool.pyright]
-include = ["packages/agent-wait/src"]
+include = ["src"]
 exclude = ["reference", "**/node_modules", "**/__pycache__"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"

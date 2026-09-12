@@ -743,3 +743,47 @@ the registry were removed.
 `langgraph_wait`: `hitl`, `publish_interrupts` (and `questions_in`, which it uses).
 `agent_wait`: `WaitPolicy`, `Question`, `WaitEnvelope`, `publish`, `build_envelope`, the
 announcers. Nothing else.
+
+## 22. v0.5 — one package, `@wait`, interface + implementors (2026-09-12)
+
+Directed by the owner after the Strands feasibility review.
+
+### 22.1 One distribution, extras per framework and provider
+
+`agent-wait` is the only distribution. Bare install is the core (policy, envelope,
+`publish()`, `BaseAnnounce`, Webhook/Log/InMemory announcers, the `Framework` interface)
+and has no dependencies. `[langgraph]` and `[aws]` are extras; `[strands]` and `[gcp]`
+follow the same pattern when written. A subpackage imported without its extra raises an
+`ImportError` naming the extra. Rationale: three coupled distributions were a pin-drift
+hazard (caught once already at 0.3.0) and a naming hazard per framework × provider; one
+name with extras is what users type anyway.
+
+### 22.2 The decorator is `@wait`
+
+The name `agent-wait` stays: "wait" is the base concept and covers the non-human cases
+(vendor callbacks, external jobs, another agent) that `hitl` does not. The decorator is
+renamed to match. HITL discoverability is carried by metadata (summary, keywords) and by
+the first line of the README, not by the API name.
+
+### 22.3 Interface + implementors
+
+`Framework` (core) has three abstract methods — `interrupt(value, call_args)`,
+`interrupts_in(result)`, `current_thread_id(call_args)` — and a `hidden_params` tuple
+for framework-injected parameters (Strands' `tool_context`). `make_wait(framework)` and
+`make_publish_interrupts(framework)` build the user-facing functions once; a framework
+subpackage is one implementor plus the two bindings. Providers implement `BaseAnnounce`
+exactly as before. A framework subpackage must be testable through the core contract
+test (`tests/core/test_framework.py`, stub implementor, no framework installed).
+
+### 22.4 Public surface
+
+`agent_wait`: `WaitPolicy`, `Question`, `WaitEnvelope`, `publish`, `build_envelope`,
+`BaseAnnounce` and the core announcers, `Framework`, `make_wait`,
+`make_publish_interrupts`, `question_id_for`.
+`agent_wait.langgraph`: `wait`, `publish_interrupts`, `questions_in`, `LangGraphFramework`.
+`agent_wait.aws`: `SnsAnnounce`, `SqsAnnounce`, `EventBridgeAnnounce`, `DynamoDbAnnounce`.
+
+### 22.5 Superseded sections
+
+§10, §12 and §13 describe the v0.1 design (store, tokens, `dispatch()`); they were agreed
+and removed in v0.2–v0.4 and are kept as history only. §21.3 is replaced by §22.4.

@@ -5,23 +5,31 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/skamalj/agent-wait/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-skamalj.github.io%2Fagent--wait-black.svg)](https://skamalj.github.io/agent-wait/)
 
-**Get a LangGraph interrupt out of the process, and the answer back in.**
+**Make an agent wait for something outside the process — and get the answer back in.**
 
-When a node calls `interrupt()`, the graph pauses and the interrupt is handed to whatever
-called `invoke()` — and that is where LangGraph stops. There is no built-in way to tell
-anyone *else* that a question was asked, and no built-in way for anyone else to answer
-it. The moment the question has to reach a person on Slack, an approvals dashboard, a
-ticket queue or another service, you are writing that code yourself — whether your agent
-is a server that runs for a year or a Lambda that is gone in seconds.
+Human-in-the-loop is the common case: a refund over the limit, a contract clause, a
+deploy. But the same shape covers a vendor callback, a payment processor, a KYC check, or
+another agent — anything the run cannot continue without, and nothing inside the process
+can supply.
 
-agent-wait is that code. It takes the interrupt and puts it somewhere people can see it —
-a topic, a queue, a webhook, a database row — with everything needed to answer it in one
-envelope, and documents the shape of the answer so the return leg is one `if`.
+LangGraph has `interrupt()` for this. When a node calls it the graph pauses and the
+interrupt is handed to whatever called `invoke()` — and that is where LangGraph stops.
+There is no built-in way to tell anyone *else* that a question was asked, and no built-in
+way for anyone else to answer it. The moment the question has to reach Slack, an approvals
+dashboard, a ticket queue or another service, you are writing that code yourself — whether
+your agent is a server that runs for a year or a Lambda that is gone in seconds.
+
+agent-wait is that code. It takes the interrupt and puts it somewhere people (or systems)
+can see it — a topic, a queue, a webhook, a database row — with everything needed to answer
+it in one envelope, and documents the shape of the answer so the return leg is one `if`.
 
 ```bash
-pip install agent-wait langgraph-wait          # core + LangGraph
-pip install agent-wait-aws                     # SNS / SQS / EventBridge / DynamoDB announcers
+pip install "agent-wait[langgraph]"        # @wait + publish_interrupts for LangGraph
+pip install "agent-wait[langgraph,aws]"    # + SNS / SQS / EventBridge / DynamoDB announcers
 ```
+
+The bare `agent-wait` is the framework-free core (policy, envelope, webhook and in-memory
+announcers) and depends on nothing. Each extra pulls in exactly one framework or provider.
 
 ## The whole thing
 
@@ -29,8 +37,8 @@ pip install agent-wait-aws                     # SNS / SQS / EventBridge / Dynam
 
 ```python
 from agent_wait import WaitPolicy
+from agent_wait.langgraph import wait
 from langchain_core.tools import tool
-from langgraph_wait import hitl
 
 FINANCE = WaitPolicy(
     timeout="P3D",
@@ -41,7 +49,7 @@ FINANCE = WaitPolicy(
 
 
 @tool
-@hitl(FINANCE)
+@wait(FINANCE)
 def issue_refund(order_id: str, amount: int) -> str:
     payments.refund(order_id, amount)  # runs only if the answer is {"action": "approve"}
     return "refunded"
@@ -61,23 +69,24 @@ none is enforced — the consumer acts on them:
 | `answer_ttl` | How long an answer stays usable after it is given. |
 | `allowed_actions` | Which answers are meaningful — the buttons to draw. |
 | `tags` | Routing hints; become SNS message attributes. |
+| `correlation` | Your reference for the thing being waited on — a vendor job id, a ticket. |
 
 A node that needs the answer itself declares a `decision` parameter and always runs,
 approve or not, with the answer in it:
 
 ```python
-@hitl(FINANCE)
+@wait(FINANCE)
 def review(state, decision=None):
     return {"decision": decision}  # verbatim: {"action": "approve", "note": "ok"}
 ```
 
-The parameter name is yours — `@hitl(FINANCE, decision="verdict")` looks for `verdict`.
+The parameter name is yours — `@wait(FINANCE, decision="verdict")` looks for `verdict`.
 
 **After the run** — one call:
 
 ```python
-from agent_wait_aws import SnsAnnounce
-from langgraph_wait import publish_interrupts
+from agent_wait.aws import SnsAnnounce
+from agent_wait.langgraph import publish_interrupts
 
 result = graph.invoke(value, {"configurable": {"thread_id": thread_id}})
 publish_interrupts(result, thread_id, announce=[SnsAnnounce(topic_arn)])
@@ -108,11 +117,11 @@ resume for a question the thread has moved past — so there is nothing to check
 ## Async mode — the thread does not park
 
 ```python
-from agent_wait_aws import DynamoDbAnnounce, SnsAnnounce
+from agent_wait.aws import DynamoDbAnnounce, SnsAnnounce
 
 
 @tool
-@hitl(FINANCE, mode="async", announce=[SnsAnnounce(topic_arn), DynamoDbAnnounce(table)])
+@wait(FINANCE, mode="async", announce=[SnsAnnounce(topic_arn), DynamoDbAnnounce(table)])
 def issue_refund(order_id: str, amount: int) -> str: ...
 ```
 
@@ -141,7 +150,7 @@ question; the `DynamoDbAnnounce` row (or whatever you keep) is the only record.
 ```
 
 `reply_with` is a filled-in stub: copy it, set `answer`, send it back. Whatever goes in
-`answer` is what the `@hitl` function receives — verbatim.
+`answer` is what the `@wait` function receives — verbatim.
 
 Full schema, the recommended answer shape, and how to deduplicate:
 [Message formats](https://skamalj.github.io/agent-wait/message-formats/).
@@ -167,8 +176,8 @@ class RedisAnnounce(BaseAnnounce):
 
 A raise inside `deliver()` becomes a log line; the run completes.
 
-Shipped: `WebhookAnnounce` (signed JSON POST, stdlib), `LogAnnounce`, `InMemoryAnnounce`,
-and in `agent-wait-aws`: `SnsAnnounce`, `SqsAnnounce`, `EventBridgeAnnounce`,
+Shipped in the core: `WebhookAnnounce` (signed JSON POST, stdlib), `LogAnnounce`,
+`InMemoryAnnounce`. With `[aws]`: `SnsAnnounce`, `SqsAnnounce`, `EventBridgeAnnounce`,
 `DynamoDbAnnounce` (the question as a row an approvals UI can query). Each one, its
 constructor and where the question lands: [Announcers](https://skamalj.github.io/agent-wait/announcers/).
 Your own: [Writing an announcer](https://skamalj.github.io/agent-wait/writing-an-announcer/).
@@ -184,7 +193,7 @@ Your own: [Writing an announcer](https://skamalj.github.io/agent-wait/writing-an
 ## Two things to know
 
 **Not compatible with LangChain's `HumanInTheLoopMiddleware`.** It interrupts *before* a
-tool is called, in its own shape; `@hitl` interrupts inside the call. Both on one tool
+tool is called, in its own shape; `@wait` interrupts inside the call. Both on one tool
 means two interrupts for one approval. Use one or the other.
 
 **One `interrupt()` per node** on langgraph 1.2.x. Two interrupting tools dispatched by
@@ -195,12 +204,21 @@ interrupting tool its own node. Pinned by a test that fails if LangGraph changes
 
 ## Layout
 
+One distribution, one import root. Frameworks and providers are subpackages behind extras:
+
 ```
-packages/agent-wait        core: Question, WaitPolicy, the envelope, publish(), announcers. No deps.
-packages/langgraph-wait    @hitl and publish_interrupts(). The only LangGraph import.
-packages/agent-wait-aws    four announce adapters, and a CDK stack for the example.
-examples/refund_agent      a graph and a host, written for Lambda behind SQS.
-docs/                      message contract, architecture, announcer guide, consumer guide.
+agent_wait              core: WaitPolicy, Question, the envelope, publish(), BaseAnnounce,
+                        Webhook/Log/InMemory announcers, and the Framework interface. No deps.
+agent_wait.langgraph    [langgraph]  @wait and publish_interrupts() bound to LangGraph.
+agent_wait.aws          [aws]        SnsAnnounce, SqsAnnounce, EventBridgeAnnounce, DynamoDbAnnounce.
+examples/refund_agent   a graph, a host written for Lambda behind SQS, and its CDK stack.
+docs/                   message contract, architecture, announcer guide, consumer guide.
 ```
+
+`@wait` and `publish_interrupts` are written once against a three-method `Framework`
+interface; `agent_wait.langgraph` is one implementor of it. Announcers are the same
+split: `BaseAnnounce` is the interface, each provider subpackage the implementors. A
+`strands` extra follows the same pattern — see
+[Architecture](https://skamalj.github.io/agent-wait/architecture/).
 
 MIT. Issues and PRs at [github.com/skamalj/agent-wait](https://github.com/skamalj/agent-wait).

@@ -17,18 +17,17 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from agent_wait import LogAnnounce
-from agent_wait_aws import DynamoDbAnnounce, SnsAnnounce
 from langgraph.types import Command
-from langgraph_wait import publish_interrupts
 
+from agent_wait import LogAnnounce
+from agent_wait.aws import DynamoDbAnnounce, SnsAnnounce
+from agent_wait.langgraph import publish_interrupts
 from refund_agent.dynamo_checkpointer import DynamoDBSaver
 from refund_agent.graph import build_graph
 
 # The Lambda runtime leaves the root logger at WARNING, so a library logging at INFO is
 # silent in production -- which is exactly when you want to know what was published.
-for _name in ("agent_wait", "agent_wait_aws"):
-    logging.getLogger(_name).setLevel(os.environ.get("AGENT_WAIT_LOG_LEVEL", "INFO").upper())
+logging.getLogger("agent_wait").setLevel(os.environ.get("AGENT_WAIT_LOG_LEVEL", "INFO").upper())
 
 _log = logging.getLogger("refund_agent")
 

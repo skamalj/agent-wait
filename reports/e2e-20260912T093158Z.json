@@ -1,0 +1,131 @@
+{
+  "stack": "agent-wait-poc",
+  "region": "ap-south-1",
+  "passed": 15,
+  "total": 15,
+  "entries": [
+    {
+      "at": "2026-09-12T09:30:14Z",
+      "scenario": "A",
+      "note": "starting a 41000 refund on order-a-fc02ba"
+    },
+    {
+      "at": "2026-09-12T09:30:18Z",
+      "scenario": "A",
+      "check": "the question was announced",
+      "ok": true,
+      "detail": 1
+    },
+    {
+      "at": "2026-09-12T09:30:18Z",
+      "scenario": "A",
+      "check": "the stub names the question",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:30:18Z",
+      "scenario": "A",
+      "check": "no refund before an answer",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:30:18Z",
+      "scenario": "A",
+      "check": "the question is a row in the approvals table",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:30:20Z",
+      "scenario": "A",
+      "check": "exactly one refund",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:30:20Z",
+      "scenario": "A",
+      "note": "the same answer again, then a different one, then one for a made-up question"
+    },
+    {
+      "at": "2026-09-12T09:30:40Z",
+      "scenario": "A",
+      "check": "still exactly one refund",
+      "ok": true,
+      "detail": 1
+    },
+    {
+      "at": "2026-09-12T09:30:45Z",
+      "scenario": "B",
+      "check": "the question was announced",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:30:45Z",
+      "scenario": "B",
+      "check": "the deadline is an absolute instant",
+      "ok": true,
+      "detail": "2026-09-12T09:34:00Z"
+    },
+    {
+      "at": "2026-09-12T09:30:45Z",
+      "scenario": "B",
+      "check": "the default is published with it",
+      "ok": true,
+      "detail": {
+        "action": "reject",
+        "reason": "no response within PT2M"
+      }
+    },
+    {
+      "at": "2026-09-12T09:30:45Z",
+      "scenario": "B",
+      "note": "consumer: deadline passed (as far as this script is concerned); sending the default"
+    },
+    {
+      "at": "2026-09-12T09:31:05Z",
+      "scenario": "B",
+      "check": "no refund",
+      "ok": true,
+      "detail": 0
+    },
+    {
+      "at": "2026-09-12T09:31:25Z",
+      "scenario": "B",
+      "check": "a late approval changes nothing",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:31:30Z",
+      "scenario": "C",
+      "check": "the question was announced",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:31:32Z",
+      "scenario": "C",
+      "check": "the refund happened",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "at": "2026-09-12T09:31:57Z",
+      "scenario": "C",
+      "check": "still exactly one refund",
+      "ok": true,
+      "detail": 1
+    },
+    {
+      "at": "2026-09-12T09:31:58Z",
+      "scenario": "Z",
+      "check": "the dead-letter queue is empty",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

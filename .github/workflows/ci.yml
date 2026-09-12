@@ -31,8 +31,8 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      - name: Sync the workspace
-        run: uv sync --all-packages
+      - name: Sync
+        run: uv sync --all-extras
 
       - name: Lint
         run: uv run ruff check .
@@ -50,7 +50,7 @@ jobs:
         run: >
           uv run pytest
           --junitxml=reports/junit.xml
-          --cov=agent_wait --cov=langgraph_wait --cov=agent_wait_aws
+          --cov=agent_wait
           --cov-report=term-missing --cov-report=xml:reports/coverage.xml
 
       - name: Coverage floor
@@ -78,14 +78,14 @@ jobs:
           node-version: 22
 
       - run: uv python install 3.12
-      - run: uv sync --all-packages
+      - run: uv sync --all-extras
 
       - name: Build the Lambda bundle
         run: uv run python scripts/build_lambda_bundle.py
 
       - name: cdk synth
         # Proves the stack is deployable without deploying it. No credentials needed.
-        working-directory: packages/agent-wait-aws/cdk
+        working-directory: examples/refund_agent/cdk
         env:
           CDK_DEFAULT_ACCOUNT: "111111111111"
           CDK_DEFAULT_REGION: ap-south-1
