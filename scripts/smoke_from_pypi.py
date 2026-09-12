@@ -1,10 +1,11 @@
 """Prove the *published* package works: run in a clean venv with nothing but PyPI installs.
 
     uv venv .smoke && . .smoke/bin/activate
-    uv pip install "agent-wait[langgraph,aws]"
+    uv pip install "agent-wait[langgraph,pydantic-ai,aws]"
     python scripts/smoke_from_pypi.py
 
-Not an import check. Real graphs, both modes, every announcer, the round trip.
+Not an import check. Real graphs, both modes, every announcer, the round trip, and the
+same decorator on a Pydantic AI agent.
 Exits non-zero on the first thing that is wrong.
 """
 
@@ -19,11 +20,16 @@ from typing import Any, TypedDict
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, RunContext, ToolApproved
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import FunctionModel
 
 import agent_wait
 from agent_wait import InMemoryAnnounce, WaitPolicy, WebhookAnnounce, verify_signature
 from agent_wait.aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, SqsAnnounce
 from agent_wait.langgraph import publish_interrupts, wait
+from agent_wait.pydantic_ai import publish_interrupts as publish_pai
+from agent_wait.pydantic_ai import wait as wait_pai
 
 SECRET = b"smoke"
 PAID: list[str] = []
@@ -92,6 +98,52 @@ def interrupt_graph() -> Any:
     g.add_edge("pay", END)
     g.add_edge("decline", END)
     return g.compile(checkpointer=InMemorySaver())
+
+
+def pydantic_ai_section(memory: InMemoryAnnounce) -> None:
+    """The same decorator on a Pydantic AI agent: park, publish, approve with edited args."""
+
+    def model(messages: Any, info: Any) -> ModelResponse:
+        for message in reversed(messages):
+            for part in getattr(message, "parts", []):
+                if isinstance(part, ToolReturnPart):
+                    return ModelResponse(parts=[TextPart(f"done: {part.content}")])
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name="issue_refund", args={"order_id": "o-1", "amount": 250})]
+        )
+
+    agent: Any = Agent(FunctionModel(model), output_type=[str, DeferredToolRequests])
+    paid: list[int] = []
+
+    @agent.tool
+    @wait_pai(POLICY)
+    def issue_refund(ctx: RunContext[None], order_id: str, amount: int) -> str:
+        paid.append(amount)
+        return f"refunded {amount}"
+
+    print("pydantic-ai: the same @wait parks a run")
+    parked = agent.run_sync("refund o-1")
+    check(
+        isinstance(parked.output, DeferredToolRequests) and paid == [],
+        "run ended on DeferredToolRequests, body not run",
+    )
+    (envelope,) = publish_pai(parked, "p-1", [memory])
+    (call,) = parked.output.approvals
+    check(envelope.question_id == call.tool_call_id, "question_id is the tool_call_id")
+    check(
+        envelope.question == {"function": "issue_refund", "args": {"order_id": "o-1", "amount": 250}},
+        "ctx hidden",
+    )
+
+    done = agent.run_sync(
+        None,
+        message_history=parked.all_messages(),
+        deferred_tool_results=DeferredToolResults(
+            approvals={call.tool_call_id: ToolApproved()},
+            metadata={call.tool_call_id: {"action": "approve", "args": {"amount": 100}}},
+        ),
+    )
+    check(done.output == "done: refunded 100" and paid == [100], "approved with edited args, body ran once")
 
 
 def main() -> None:
@@ -181,6 +233,8 @@ def main() -> None:
         len(inbox.events) == 1 and inbox.events[0][1].source == {"function": "big_transfer"},
         "decorator published it",
     )
+
+    pydantic_ai_section(memory)
 
     server.shutdown()
     print("\nsmoke test passed against the installed package")

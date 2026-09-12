@@ -1,7 +1,7 @@
 [project]
 name = "agent-wait"
-version = "0.5.0"
-description = "Human-in-the-loop for LangGraph agents -- and anything else a run has to wait for. Get the interrupt out of the process (SNS, SQS, EventBridge, DynamoDB, webhook) with everything needed to answer it; get the answer back in."
+version = "0.6.0"
+description = "Human-in-the-loop for LangGraph and Pydantic AI agents -- and anything else a run has to wait for. Get the interrupt out of the process (SNS, SQS, EventBridge, DynamoDB, webhook) with everything needed to answer it; get the answer back in."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -13,6 +13,7 @@ keywords = [
     "approval",
     "langgraph",
     "langchain",
+    "pydantic-ai",
     "agents",
     "interrupt",
     "durable",
@@ -39,8 +40,9 @@ dependencies = []
 
 [project.optional-dependencies]
 langgraph = ["langgraph>=1.2,<2"]
+pydantic-ai = ["pydantic-ai-slim>=2.43,<3"]
 aws = ["boto3>=1.35"]
-all = ["agent-wait[langgraph,aws]"]
+all = ["agent-wait[langgraph,pydantic-ai,aws]"]
 
 [project.urls]
 Homepage = "https://skamalj.github.io/agent-wait/"

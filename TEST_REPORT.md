@@ -1,45 +1,55 @@
-# TEST_REPORT — agent-wait v0.5.0
+# TEST_REPORT — agent-wait v0.6.0
 
-Supersedes the v0.4.1 report. Earlier reports are at their tags.
+Supersedes the v0.5.0 report. Earlier reports are at their tags.
 
 ## 0. Read this first
 
-**One package, two things in it.** `@wait` makes a function wait for an answer from
-outside the process — on a tool the body runs only on approve; on a node with a
-`decision` parameter it always runs and gets the answer; in `mode="async"` the decorator
-publishes and returns pending without parking. `publish_interrupts(result, thread_id,
-announce)` after the run reads what the framework returned and hands envelopes to
-announcers. No graph handle, no state read, nothing received.
+**One package, two things in it, two frameworks.** `@wait` makes a function wait for an
+answer from outside the process; `publish_interrupts(result, thread_id, announce)` after
+the run announces what the framework parked on. Both are written once against the
+three-method `Framework` interface. `agent_wait.langgraph` (0.5) and, new in 0.6,
+`agent_wait.pydantic_ai` are the implementors; the AWS announcers are the providers.
 
-**What changed in 0.5.** `langgraph-wait` and `agent-wait-aws` are subpackages of
-`agent-wait` behind extras (`[langgraph]`, `[aws]`); bare install is the dependency-free
-core. `@hitl` is renamed `@wait`. The decorator and `publish_interrupts` are written once
-against a three-method `Framework` interface; `agent_wait.langgraph` is one implementor.
-Nothing in the envelope, the answer shape, or the behaviour changed.
+**What changed in 0.6.** The `[pydantic-ai]` extra. Owner's constraint: no change to
+the core or the interface — met; the diff to `src/agent_wait` outside the new subpackage
+is two docstring lines. The implementor is 50 lines. The `tests/core` contract test did
+not change and still passes.
 
-**Verified:** every local level; the core contract against a stub framework with no
-LangGraph installed; the built wheel in a clean venv (bare = core only, guards name the
-extra, `[langgraph,aws]` runs the full smoke test); `cdk synth`; the deployed AWS run
-(§5). The PyPI round trip is verified by the release workflow on every tag.
+**Verified:** every local level, including 13 tests that drive real Pydantic AI agents
+(`FunctionModel`, no network) through park → publish → approve / edit / deny → re-run;
+the built wheel in a clean venv (bare = core; three guards name their extra;
+`[langgraph,pydantic-ai,aws]` passes the smoke test, which now has a Pydantic AI
+section). **Not re-run:** the AWS e2e — the deployed example is LangGraph and nothing
+on that path changed since the 0.5.0 run (§5 of the previous report stands).
 
 ---
 
 ## 1. Summary
 
-| | v0.4.1 | v0.5.0 |
+| | v0.5.0 | v0.6.0 |
 |---|---|---|
-| Distributions | `agent-wait`, `langgraph-wait`, `agent-wait-aws` | `agent-wait` with extras `[langgraph]`, `[aws]`, `[all]` |
-| Bare install | core | core, no dependencies |
-| Decorator | `@hitl` | `@wait` |
-| Imports | `from langgraph_wait import hitl, publish_interrupts` / `from agent_wait_aws import …` | `from agent_wait.langgraph import wait, publish_interrupts` / `from agent_wait.aws import …` |
-| Framework coupling | `langgraph_wait` written directly against LangGraph | `Framework` ABC in core; `LangGraphFramework` + two bindings |
-| Core exports added | — | `Framework`, `make_wait`, `make_publish_interrupts`, `question_id_for` |
-| pyright strict scope | core only | all of `src/` (AWS announcers now typed) |
-| Tests | 125 | 139 (+11 core contract, +3 moved/renamed) |
-| Coverage | 98% | 99% |
-| AWS e2e | not run | run, see §5 |
+| Extras | `[langgraph]`, `[aws]` | + `[pydantic-ai]` (`pydantic-ai-slim>=2.43,<3`) |
+| Framework implementors | LangGraph | LangGraph, Pydantic AI |
+| Core / `Framework` interface | — | unchanged |
+| Tests | 139 | 152 (+13 Pydantic AI) |
+| Coverage | 99% | 99% (564 statements, 8 missed) |
+| Smoke test | LangGraph + announcers | + a Pydantic AI section |
+| AWS e2e | run | not re-run (LangGraph path unchanged) |
 
 ## 2. What was built
+
+**`agent_wait.pydantic_ai` (`[pydantic-ai]`), new.** `PydanticAIFramework`:
+`interrupt` raises `ApprovalRequired(metadata=packed)` on the first call and, on the
+re-run (`ctx.tool_call_approved`), returns `ctx.tool_call_metadata` — the answer the host
+attached — or `{"action": "approve"}`; `interrupts_in` reads `result.output` when it is a
+`DeferredToolRequests` and yields `(tool_call_id, metadata[id])` for every approval and
+deferred call, falling back to `{"function", "args", "metadata"}` for tools that never
+heard of the library; `current_thread_id` reads `deps.thread_id` (attribute or key);
+`hidden_params = ("ctx",)`. A `@wait` tool without a `RunContext` is refused with a
+`TypeError` up front, because without it the re-run is indistinguishable from the first
+call. Then `wait = make_wait(...)`, `publish_interrupts = make_publish_interrupts(...)`.
+
+**Everything below is the 0.5.0 build, unchanged.**
 
 **`agent_wait` (core, no deps).** `WaitPolicy`, `Question`, `WaitEnvelope`,
 `build_envelope()`, `publish()`, `BaseAnnounce` + `Webhook`/`Log`/`InMemory`/`Composite`
@@ -75,6 +85,23 @@ human-in-the-loop for discoverability while the name stays `agent-wait`.
 
 ## 4. How it was tested
 
+**Pydantic AI (13 tests, new).** Real `Agent`s with a scripted `FunctionModel`
+(first turn calls the tool, the turn after a tool return echoes it), through
+`agent.run_sync()` and the framework's own deferred-tool machinery: a `@wait` tool parks
+the run on `DeferredToolRequests` and publishes `{function, args}` with `ctx` hidden,
+`question_id == tool_call_id`, policy fields on the envelope; a finished run publishes
+nothing; approve runs the body once with original args; approve with `args` in the
+metadata runs it with them; anything else does not run it and the model sees why
+(`ToolDenied`); a `decision` parameter receives the metadata verbatim; `approvals={id:
+True}` without metadata is a plain approve; **the host owns idempotency** — a duplicate
+from the post-run history is a `UserError`, from the pre-resume history the tool runs
+again (pinned so the doc line stays true); `requires_approval=True` and `CallDeferred`
+tools are published with the default policy; async mode publishes from inside the tool
+with the derived id, the run carries on, and needs `thread_id` in `deps`; a `@wait` tool
+without `RunContext` is refused at the first call.
+
+**Everything below is the 0.5.0 evidence, re-run and still green.**
+
 **Core (47 tests).** As before for `publish()`, `build_envelope()`, the envelope field
 set, `dedupe_key`, the announcers (webhook against a real `http.server`). New
 `test_framework.py` (11): a stub `Framework` that parks by raising — `@wait` packs
@@ -105,17 +132,16 @@ end to end (both modes, every announcer, signed webhook, the answer round trip).
 ### Results
 
 ```
-139 passed, 4 skipped (the e2e level, opt-in)
+152 passed, 4 skipped (the e2e level, opt-in)
 ruff check      clean
 ruff format     clean
-pyright strict  0 errors (src/ — core, langgraph, aws)
-coverage        99% (513 statements, 7 missed)
-cdk synth       ok (examples/refund_agent/cdk)
-wheel smoke     ok (bare = core only; [langgraph,aws] full smoke)
-mkdocs --strict ok
+pyright strict  0 errors (src/ — core, langgraph, pydantic_ai, aws)
+coverage        99% (564 statements, 8 missed)
+wheel smoke     ok (bare = core only; three guards; [langgraph,pydantic-ai,aws] full smoke)
+mkdocs --strict ok; every doc snippet parsed and its imports resolved
 ```
 
-## 5. The deployed AWS run
+## 5. The deployed AWS run (0.5.0; not re-run for 0.6.0 — the LangGraph path is unchanged)
 
 Run on 2026-09-12 from the owner's SSO session, `ap-south-1`, stack `agent-wait-poc`
 (tag `project=agent-wait`), via `scripts/deploy_and_e2e.sh --destroy`: local suite →
@@ -151,11 +177,21 @@ a stale `--timeout-seconds` flag in the deploy script) — both fixed, both torn
 **Async mode with a real model.** The decorator is exercised by calling the tool
 directly inside a node. "The model sees pending and says something sensible" needs a model.
 
-**A second framework.** The `Framework` interface is exercised by the stub and by
-LangGraph. Strands is designed against (its `tool_context.interrupt`, per-tool-call ids,
-`result.interrupts`) but not written; the docs say "planned".
+**Pydantic AI with a real model.** The 13 tests and the smoke section drive real agents
+through a scripted `FunctionModel`. "A real model calls the tool, is denied, and says
+something sensible" needs a model.
+
+**Strands.** Designed against, not written.
 
 ## 7. Deviations
+
+0. **0.6.0 additions.** (a) `tests/langgraph/test_hitl.py` → `test_wait_langgraph.py`
+   and the new file is `test_wait_pydantic_ai.py`: pytest refuses two `test_wait.py`
+   basenames without `__init__.py` files. (b) The smoke script imports Pydantic AI at
+   module level rather than inside the section: with `from __future__ import annotations`
+   Pydantic AI cannot resolve a *locally* imported `RunContext` annotation — reproduced
+   on a plain `@agent.tool` with no `@wait`, so not ours, but worth knowing. (c) CrewAI
+   was analysed and declined; Strands remains designed-against only (REQUIREMENTS §23).
 
 1. **Bare install is the core, not everything.** The owner asked whether one package
    should install all frameworks and providers; my recommendation was that a bare install

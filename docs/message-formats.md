@@ -43,8 +43,8 @@ your queue, your webhook, or as a row in your table.
 | `type` | string | Always `wait.created`. |
 | `event_id` | ULID | Fresh on every publish. For logs and tracing. **Not** the deduplication key. |
 | `thread_id` | string | The agent's conversation identity. |
-| `question_id` | string | The question's identity. In interrupt mode it is LangGraph's `Interrupt.id`; in async mode it is `sha256(thread_id | function | args)`. Stable across republishes. |
-| `question` | any | From `@wait`: `{"function": name, "args": {...}}`, the call that is waiting. From a bare `interrupt(value)`: `value` as is. Opaque to every adapter. |
+| `question_id` | string | The question's identity. In interrupt mode it is the framework's own id — LangGraph's `Interrupt.id`, Pydantic AI's `tool_call_id`; in async mode it is `sha256(thread_id | function | args)`. Stable across republishes. |
+| `question` | any | From `@wait`: `{"function": name, "args": {...}}`, the call that is waiting. From a bare LangGraph `interrupt(value)`: `value` as is; from a Pydantic AI `requires_approval` or `CallDeferred` tool: `{"function", "args"}` plus any `metadata`. Opaque to every adapter. |
 | `allowed_actions` | string[] | Which answers are meaningful. Advisory. |
 | `expires_at` | RFC 3339 UTC or null | When the asker considers the question stale. Advisory. Measured from publish time unless the caller supplied `asked_at`. |
 | `default` | any or null | What the asker said to assume if nobody answers. Advisory. |
@@ -115,7 +115,7 @@ Whatever your agent already accepted. Only its *absence* of `question_id` matter
 
 ## 4. What a host does with an answer
 
-Interrupt mode:
+Interrupt mode, LangGraph:
 
 ```python
 if "question_id" in message:
@@ -140,10 +140,44 @@ Facts worth knowing, none of which the host has to code for:
   If the consumer sends nothing, the thread waits indefinitely; that is LangGraph.
 - **`valid_until` / `answer_ttl` are the consumer's and host's to honour**, if they care.
 
+Interrupt mode, Pydantic AI — the framework has no checkpointer, so the host stores
+`message_history` under `thread_id` and the answer rides in `metadata`:
+
+```python
+from pydantic_ai import DeferredToolResults, ToolApproved, ToolDenied
+
+if "question_id" in message:
+    answer, qid = message["answer"], message["question_id"]
+    approved = isinstance(answer, dict) and answer.get("action") == "approve"
+    result = agent.run_sync(
+        None,
+        message_history=load(message["thread_id"]),
+        deferred_tool_results=DeferredToolResults(
+            approvals={qid: ToolApproved() if approved else ToolDenied(str(answer))},
+            metadata={qid: answer} if isinstance(answer, dict) else {},
+        ),
+    )
+else:
+    result = agent.run_sync(message["input"], message_history=load(message["thread_id"]))
+
+store(message["thread_id"], result.all_messages())  # before acknowledging the message
+publish_interrupts(result, message["thread_id"], announce)
+```
+
+The facts differ here, and the host has to code for one of them:
+
+- **A duplicate answer is refused only if the stored history already holds the tool's
+  return** (`UserError`). Resuming twice from the pre-resume history runs the tool twice.
+  Store, then acknowledge.
+- **`ToolDenied` never calls the tool**; the model receives the denial message. So the
+  "anything else is returned in its place" rule is the framework's own.
+- **A `CallDeferred` question** is answered with the call's *result*, in
+  `DeferredToolResults.calls={qid: value}`, not `approvals`.
+
 Async mode: nothing is parked and nothing is resumed. The decision arrives as a new
-message and the host invokes the graph with it however the graph is designed to react.
-LangGraph has no memory of the question; if you want one, the `DynamoDbAnnounce` row (or
-anything else you keep) is it.
+message and the host invokes the agent with it however the agent is designed to react.
+The framework has no memory of the question; if you want one, the `DynamoDbAnnounce` row
+(or anything else you keep) is it.
 
 ---
 

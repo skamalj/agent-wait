@@ -8,7 +8,7 @@ agent-wait needs exactly three things from an agent framework, and nothing else:
 
 Everything users touch -- `@wait`, `publish_interrupts`, the envelope, the announcers --
 is built once in `agent_wait.wait` on top of this interface. A framework subpackage
-(`agent_wait.langgraph`, `agent_wait.strands`, ...) is one implementor of it and two
+(`agent_wait.langgraph`, `agent_wait.pydantic_ai`, ...) is one implementor of it and two
 lines of binding. Users never see this class; they import the bound names.
 
 The same split holds for announcers: `announce.base.BaseAnnounce` is the interface, and

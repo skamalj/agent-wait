@@ -66,19 +66,31 @@ publish_interrupts = make_publish_interrupts(LangGraphFramework())
 That is the whole subpackage. A user never sees the class; they import the bound names.
 The same split holds for announcers: `BaseAnnounce` is the interface, `agent_wait.aws`
 is implementors. Adding a framework or a provider is a subpackage and an extra in
-`pyproject.toml`, and nothing in the core changes.
+`pyproject.toml`, and nothing in the core changes — `agent_wait.pydantic_ai` was added
+without touching it.
 
-| | LangGraph (`[langgraph]`) | Strands (`[strands]`, planned) |
+| | LangGraph (`[langgraph]`) | Pydantic AI (`[pydantic-ai]`) |
 |---|---|---|
-| `interrupt()` | `langgraph.types.interrupt(value)` | `tool_context.interrupt(name, reason=value)` |
-| `interrupts_in()` | `result["__interrupt__"]` → `(Interrupt.id, .value)` | `result.interrupts` when `stop_reason == "interrupt"` → `(Interrupt.id, .reason)` |
-| `current_thread_id()` | `get_config()["configurable"]["thread_id"]` | the agent's session id |
-| `hidden_params` | — | `tool_context` |
-| resume (host code) | `Command(resume={id: answer})` | `[{"interruptResponse": {"interruptId": id, "response": answer}}]` |
+| `interrupt()` | `langgraph.types.interrupt(value)`; on the re-run it returns the resume value | `raise ApprovalRequired(metadata=value)`; on the re-run (`ctx.tool_call_approved`) it returns `ctx.tool_call_metadata`, or `{"action": "approve"}` if none |
+| `interrupts_in()` | `result["__interrupt__"]` → `(Interrupt.id, .value)` | `result.output` when it is a `DeferredToolRequests` → `(tool_call_id, metadata[id])` for every approval and deferred call |
+| `current_thread_id()` | `get_config()["configurable"]["thread_id"]` | `ctx.deps.thread_id` (or `deps["thread_id"]`) — the framework has no thread of its own |
+| `hidden_params` | — | `ctx` (the `RunContext`) |
+| persistence | the checkpointer | none: `message_history` is the host's, stored under `thread_id` |
+| resume (host code) | `Command(resume={id: answer})` | `DeferredToolResults(approvals={id: ToolApproved() / ToolDenied(...)}, metadata={id: answer})` |
+| duplicate answer | ignored by the framework | refused only if the history passed already holds the tool's return; else the tool runs again |
 
 The user's code is the same on both: `@wait(policy)` on the function,
 `publish_interrupts(result, thread_id, announce)` after the run, and one `if` on
 `question_id` when the answer comes back. Only the resume line is the framework's own.
+
+On Pydantic AI, `ToolApproved` makes the framework call the tool again with the original
+arguments and `ctx.tool_call_approved = True`; the `@wait` wrapper then applies the same
+rules as on LangGraph — a `decision` parameter receives the answer, `answer["args"]`
+edits the call — because the answer rides in `DeferredToolResults.metadata`. `ToolDenied`
+makes the framework skip the tool and hand the model the denial message, which is the
+"anything else is returned in its place" rule done by the framework itself. The host
+passes the answer through `metadata`, not `override_args`: `override_args` replaces the
+whole argument set and bypasses the wrapper's merge.
 
 ## Two interrupt shapes, one envelope
 

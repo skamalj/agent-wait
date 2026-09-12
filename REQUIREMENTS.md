@@ -787,3 +787,29 @@ test (`tests/core/test_framework.py`, stub implementor, no framework installed).
 
 §10, §12 and §13 describe the v0.1 design (store, tokens, `dispatch()`); they were agreed
 and removed in v0.2–v0.4 and are kept as history only. §21.3 is replaced by §22.4.
+
+## 23. v0.6 — Pydantic AI, and the frameworks considered (2026-09-12)
+
+### 23.1 Pydantic AI is the second implementor
+
+Owner's direction: build it, with **no change to the core or the `Framework` interface**
+— "simple `@wait` and publish, as needed". Met: `agent_wait.pydantic_ai` is one class
+(`interrupt` → `ApprovalRequired(metadata=packed)`; `interrupts_in` → the
+`DeferredToolRequests` in `result.output`; `current_thread_id` → `deps.thread_id`) plus
+the two bindings. The answer reaches the approved re-run through
+`DeferredToolResults.metadata`, so the wrapper's rules are unchanged. What the framework
+leaves to the host is documented, not absorbed: the host owns `message_history` (no
+checkpointer) and therefore idempotency; the `RunContext` parameter is named `ctx`.
+
+### 23.2 CrewAI: considered, declined
+
+OSS CrewAI Flows already externalise the interrupt themselves (`@human_feedback` calls
+the provider with the full context; `kickoff()` returns `HumanFeedbackPending`;
+`Flow.from_pending(id).resume(str)`), so the gap this library fills is thin there, and
+the semantics differ (the decorated method always runs; the human reviews its output; the
+answer is a string classified by an LLM). Crews and `Flow.ask()` are console-blocking in
+OSS. Not built.
+
+### 23.3 Strands: designed against, not built
+
+Feasible (`tool_context.interrupt`, per-call ids, `result.interrupts`). Not asked for.

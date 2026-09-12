@@ -12,12 +12,13 @@ deploy. But the same shape covers a vendor callback, a payment processor, a KYC 
 another agent — anything the run cannot continue without, and nothing inside the process
 can supply.
 
-LangGraph has `interrupt()` for this. When a node calls it the graph pauses and the
-interrupt is handed to whatever called `invoke()` — and that is where LangGraph stops.
-There is no built-in way to tell anyone *else* that a question was asked, and no built-in
-way for anyone else to answer it. The moment the question has to reach Slack, an approvals
-dashboard, a ticket queue or another service, you are writing that code yourself — whether
-your agent is a server that runs for a year or a Lambda that is gone in seconds.
+LangGraph has `interrupt()` for this; Pydantic AI has `ApprovalRequired`. In both, the
+run pauses and the question is handed to whatever called it — and that is where the
+framework stops. There is no built-in way to tell anyone *else* that a question was asked,
+and no built-in way for anyone else to answer it. The moment the question has to reach
+Slack, an approvals dashboard, a ticket queue or another service, you are writing that
+code yourself — whether your agent is a server that runs for a year or a Lambda that is
+gone in seconds.
 
 agent-wait is that code. It takes the interrupt and puts it somewhere people (or systems)
 can see it — a topic, a queue, a webhook, a database row — with everything needed to answer
@@ -25,6 +26,7 @@ it in one envelope, and documents the shape of the answer so the return leg is o
 
 ```bash
 pip install "agent-wait[langgraph]"        # @wait + publish_interrupts for LangGraph
+pip install "agent-wait[pydantic-ai]"      # the same two names for Pydantic AI
 pip install "agent-wait[langgraph,aws]"    # + SNS / SQS / EventBridge / DynamoDB announcers
 ```
 
@@ -113,6 +115,50 @@ publish_interrupts(result, message["thread_id"], announce)
 
 That is the complete integration. A duplicate answer runs nothing — LangGraph ignores a
 resume for a question the thread has moved past — so there is nothing to check.
+
+## The same two names on Pydantic AI
+
+```python
+from agent_wait.pydantic_ai import publish_interrupts, wait
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, RunContext, ToolApproved, ToolDenied
+
+agent = Agent("openai:gpt-5.4", output_type=[str, DeferredToolRequests])
+
+
+@agent.tool
+@wait(FINANCE)
+def issue_refund(ctx: RunContext[None], order_id: str, amount: int) -> str:
+    payments.refund(order_id, amount)
+    return "refunded"
+
+
+result = agent.run_sync("refund order 4471", message_history=history)
+publish_interrupts(result, thread_id, announce=[SnsAnnounce(topic_arn)])
+store(thread_id, result.all_messages())  # Pydantic AI has no checkpointer; the history is yours
+```
+
+The run ends with `DeferredToolRequests` in `result.output`; `question_id` is the
+`tool_call_id`. The answer goes back through the framework's own resume, with the answer
+itself riding in `metadata` so the `@wait` rules apply unchanged:
+
+```python
+approved = answer.get("action") == "approve"
+result = agent.run_sync(
+    None,
+    message_history=load(thread_id),
+    deferred_tool_results=DeferredToolResults(
+        approvals={question_id: ToolApproved() if approved else ToolDenied(str(answer))},
+        metadata={question_id: answer},
+    ),
+)
+store(thread_id, result.all_messages())  # before acknowledging the answer message
+```
+
+Two rules the framework leaves to you: name the `RunContext` parameter `ctx`, and store
+the post-run history *before* you acknowledge an answer — a duplicate answer is refused
+only if the history you pass already holds the tool's return. `requires_approval=True`
+tools and `CallDeferred` calls (a job handed to an external system) are published too,
+with the default policy.
 
 ## Async mode — the thread does not park
 
@@ -209,16 +255,17 @@ One distribution, one import root. Frameworks and providers are subpackages behi
 ```
 agent_wait              core: WaitPolicy, Question, the envelope, publish(), BaseAnnounce,
                         Webhook/Log/InMemory announcers, and the Framework interface. No deps.
-agent_wait.langgraph    [langgraph]  @wait and publish_interrupts() bound to LangGraph.
-agent_wait.aws          [aws]        SnsAnnounce, SqsAnnounce, EventBridgeAnnounce, DynamoDbAnnounce.
+agent_wait.langgraph    [langgraph]    @wait and publish_interrupts() bound to LangGraph.
+agent_wait.pydantic_ai  [pydantic-ai]  the same two names bound to Pydantic AI's deferred tools.
+agent_wait.aws          [aws]          SnsAnnounce, SqsAnnounce, EventBridgeAnnounce, DynamoDbAnnounce.
 examples/refund_agent   a graph, a host written for Lambda behind SQS, and its CDK stack.
 docs/                   message contract, architecture, announcer guide, consumer guide.
 ```
 
 `@wait` and `publish_interrupts` are written once against a three-method `Framework`
-interface; `agent_wait.langgraph` is one implementor of it. Announcers are the same
-split: `BaseAnnounce` is the interface, each provider subpackage the implementors. A
-`strands` extra follows the same pattern — see
+interface; `agent_wait.langgraph` and `agent_wait.pydantic_ai` are implementors of it,
+about fifty lines each. Announcers are the same split: `BaseAnnounce` is the interface,
+each provider subpackage the implementors. See
 [Architecture](https://skamalj.github.io/agent-wait/architecture/).
 
 MIT. Issues and PRs at [github.com/skamalj/agent-wait](https://github.com/skamalj/agent-wait).

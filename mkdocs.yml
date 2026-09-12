@@ -1,5 +1,5 @@
 site_name: agent-wait
-site_description: Human-in-the-loop for LangGraph agents -- and anything else a run has to wait for. Get the interrupt out of the process and the answer back in.
+site_description: Human-in-the-loop for LangGraph and Pydantic AI agents -- and anything else a run has to wait for. Get the interrupt out of the process and the answer back in.
 site_url: https://skamalj.github.io/agent-wait/
 repo_url: https://github.com/skamalj/agent-wait
 repo_name: skamalj/agent-wait

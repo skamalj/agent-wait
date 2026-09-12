@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0 — 2026-09-12
+
+**Pydantic AI.** `pip install agent-wait[pydantic-ai]` adds `agent_wait.pydantic_ai`
+with the same two names, `wait` and `publish_interrupts`, bound to Pydantic AI's deferred
+tools: `@wait` raises `ApprovalRequired` with the packed question as metadata; the run
+ends with `DeferredToolRequests`; `publish_interrupts` reads it; `question_id` is the
+`tool_call_id`. On the approved re-run the answer arrives through
+`DeferredToolResults.metadata`, so a `decision` parameter and edited `args` work exactly
+as on LangGraph; `ToolDenied` is the framework's own "returned in its place".
+`requires_approval=True` tools and `CallDeferred` calls are published with the default
+policy. Async mode reads `thread_id` from `deps`.
+
+No change to the core, the `Framework` interface, the envelope or the answer shape. The
+implementor is 50 lines; the contract test in `tests/core` did not change.
+
+Documented per framework: Pydantic AI has no checkpointer, so the host stores
+`message_history` under `thread_id` and must store the post-run history before
+acknowledging an answer — a duplicate is refused only if the stored history already holds
+the tool's return. The `RunContext` parameter must be named `ctx`.
+
 ## 0.5.0 — 2026-09-12
 
 **One package.** `langgraph-wait` and `agent-wait-aws` are folded into `agent-wait` as
