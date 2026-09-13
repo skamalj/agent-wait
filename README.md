@@ -31,7 +31,9 @@ pip install "agent-wait[langgraph,aws]"    # + SNS / SQS / EventBridge / DynamoD
 ```
 
 The bare `agent-wait` is the framework-free core (policy, envelope, webhook and in-memory
-announcers) and depends on nothing. Each extra pulls in exactly one framework or provider.
+announcers) and depends on nothing. Each extra pulls in exactly one framework or provider —
+the full list, with what each framework leaves to you:
+[Frameworks and providers](https://skamalj.github.io/agent-wait/frameworks-and-providers/).
 
 ## The whole thing
 

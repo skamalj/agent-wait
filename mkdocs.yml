@@ -45,6 +45,7 @@ markdown_extensions:
 
 nav:
   - Overview: index.md
+  - Frameworks and providers: frameworks-and-providers.md
   - Message formats: message-formats.md
   - Integrating a consumer: integrating-a-consumer.md
   - Announcers: announcers.md
