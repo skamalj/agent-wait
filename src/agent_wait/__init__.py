@@ -12,10 +12,10 @@
     publish_interrupts(result, thread_id, announce=[SnsAnnounce(topic_arn)])
 
 The core is framework- and provider-neutral: the policy, the question, the envelope,
-`publish()`, and the announcer interface. `agent_wait.langgraph` and
-`agent_wait.pydantic_ai` implement the `Framework` interface for LangGraph and Pydantic
-AI; `agent_wait.aws` implements announcers for AWS. Install the extras you need:
-`pip install agent-wait[langgraph,aws]` or `agent-wait[pydantic-ai,aws]`.
+`publish()`, and the announcer interface. `agent_wait.langgraph`, `agent_wait.pydantic_ai`
+and `agent_wait.strands` implement the `Framework` interface for LangGraph, Pydantic AI
+and Strands Agents; `agent_wait.aws` implements announcers for AWS. Install the extras
+you need: `pip install agent-wait[langgraph,aws]`, `[pydantic-ai,aws]`, `[strands,aws]`.
 """
 
 from .announce import (
@@ -48,7 +48,7 @@ from .policy import WaitPolicy, parse_duration
 from .publish import build_envelope, publish
 from .wait import make_publish_interrupts, make_wait, question_id_for
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "MAX_QUESTION_BYTES",

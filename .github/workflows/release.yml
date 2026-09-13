@@ -71,7 +71,7 @@ jobs:
           VERSION="${RELEASE_VERSION#v}"
           uv venv .smoke && . .smoke/bin/activate
           for i in $(seq 1 30); do
-            if uv pip install --no-cache "agent-wait[langgraph,pydantic-ai,aws]==$VERSION"; then break; fi
+            if uv pip install --no-cache "agent-wait[langgraph,pydantic-ai,strands,aws]==$VERSION"; then break; fi
             [ "$i" = 30 ] && { echo "agent-wait==$VERSION never became installable from PyPI"; exit 1; }
             sleep 10
           done

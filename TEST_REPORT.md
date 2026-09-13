@@ -1,42 +1,55 @@
-# TEST_REPORT — agent-wait v0.6.0
+# TEST_REPORT — agent-wait v0.7.0
 
-Supersedes the v0.5.0 report. Earlier reports are at their tags.
+Supersedes the v0.6.0 report. Earlier reports are at their tags.
 
 ## 0. Read this first
 
-**One package, two things in it, two frameworks.** `@wait` makes a function wait for an
-answer from outside the process; `publish_interrupts(result, thread_id, announce)` after
-the run announces what the framework parked on. Both are written once against the
-three-method `Framework` interface. `agent_wait.langgraph` (0.5) and, new in 0.6,
-`agent_wait.pydantic_ai` are the implementors; the AWS announcers are the providers.
+**One package, two things in it, three frameworks.** `@wait` makes a function wait for
+an answer from outside the process; `publish_interrupts(result, thread_id, announce)`
+after the run announces what the framework parked on. Both are written once against the
+three-method `Framework` interface. `agent_wait.langgraph` (0.5), `agent_wait.pydantic_ai`
+(0.6) and, new in 0.7, `agent_wait.strands` are the implementors; the AWS announcers are
+the providers.
 
-**What changed in 0.6.** The `[pydantic-ai]` extra. Owner's constraint: no change to
-the core or the interface — met; the diff to `src/agent_wait` outside the new subpackage
-is two docstring lines. The implementor is 50 lines. The `tests/core` contract test did
-not change and still passes.
+**What changed in 0.7.** The `[strands]` extra. Owner's constraint, as for 0.6: no change
+to the core or the interface — met; `wait.py`, `framework.py` and the core contract test
+are untouched. The implementor is 40 lines.
 
-**Verified:** every local level, including 13 tests that drive real Pydantic AI agents
-(`FunctionModel`, no network) through park → publish → approve / edit / deny → re-run;
-the built wheel in a clean venv (bare = core; three guards name their extra;
-`[langgraph,pydantic-ai,aws]` passes the smoke test, which now has a Pydantic AI
-section). **Not re-run:** the AWS e2e — the deployed example is LangGraph and nothing
-on that path changed since the 0.5.0 run (§5 of the previous report stands).
+**Verified:** every local level, including 12 tests that drive real Strands agents (a
+scripted model vendored from the SDK's own test fixture, no network) through park →
+publish → approve / edit / deny → re-run, plus resume from a *new* `Agent` on the same
+`FileSessionManager` session; the built wheel in a clean venv (bare = core; four guards
+name their extra; `[langgraph,pydantic-ai,strands,aws]` passes the smoke test, which now
+has a Strands section). **Not re-run:** the AWS e2e (LangGraph path unchanged since
+0.5.0).
 
 ---
 
 ## 1. Summary
 
-| | v0.5.0 | v0.6.0 |
+| | v0.6.0 | v0.7.0 |
 |---|---|---|
-| Extras | `[langgraph]`, `[aws]` | + `[pydantic-ai]` (`pydantic-ai-slim>=2.43,<3`) |
-| Framework implementors | LangGraph | LangGraph, Pydantic AI |
-| Core / `Framework` interface | — | unchanged |
-| Tests | 139 | 152 (+13 Pydantic AI) |
-| Coverage | 99% | 99% (564 statements, 8 missed) |
-| Smoke test | LangGraph + announcers | + a Pydantic AI section |
-| AWS e2e | run | not re-run (LangGraph path unchanged) |
+| Extras | `[langgraph]`, `[pydantic-ai]`, `[aws]` | + `[strands]` (`strands-agents>=1.55,<2`) |
+| Framework implementors | LangGraph, Pydantic AI | + Strands Agents |
+| Core / `Framework` interface | unchanged | unchanged |
+| Tests | 149 (65 core, 46 LangGraph, 13 Pydantic AI, 25 AWS) | 161 (+12 Strands) |
+| Coverage | 99% | 99% (601 statements, 9 missed) |
+| Smoke test | + Pydantic AI section | + Strands section |
+| AWS e2e | not re-run | not re-run (LangGraph path unchanged) |
 
 ## 2. What was built
+
+**`agent_wait.strands` (`[strands]`), new.** `StrandsFramework`: `interrupt` finds the
+`ToolContext` among the call's arguments and returns
+`tool_context.interrupt("agent_wait", reason=packed)` — Strands raises
+`InterruptException` the first time and returns the human's response on the re-run, so
+the wrapper needs no re-run detection of its own; `interrupts_in` reads
+`result.interrupts` when `stop_reason == "interrupt"` and yields `(Interrupt.id,
+Interrupt.reason)`; `current_thread_id` reads `tool_context.agent.session_id`;
+`hidden_params = ("tool_context",)`. A `@wait` tool without a `ToolContext` raises
+`TypeError` at the first call (Strands turns it into an error tool result). Then
+`wait = make_wait(...)`, `publish_interrupts = make_publish_interrupts(...)`.
+
 
 **`agent_wait.pydantic_ai` (`[pydantic-ai]`), new.** `PydanticAIFramework`:
 `interrupt` raises `ApprovalRequired(metadata=packed)` on the first call and, on the
@@ -85,6 +98,23 @@ human-in-the-loop for discoverability while the name stays `agent-wait`.
 
 ## 4. How it was tested
 
+**Strands (12 tests, new).** Real `Agent`s with a scripted `Model` (the SDK's own
+`MockedModelProvider`, vendored under `tests/strands_agents/mocked_model.py`), through
+`agent(...)` and the framework's own tool, interrupt and session machinery: a `@wait`
+tool stops the run with `stop_reason == "interrupt"` and publishes `{function, args}`
+with `tool_context` hidden, `question_id` is the per-tool-call interrupt id, policy
+fields on the envelope; a finished run publishes nothing; approve runs the body once
+with original args; approve with `args` runs it with them; anything else does not run it
+and becomes the tool result the model sees; a `decision` parameter receives the answer
+verbatim, approve or not; **a parked question survives a new process** — a fresh `Agent`
+on the same `FileSessionManager` session resumes and the body runs once; a parked run
+refuses a plain prompt (`TypeError`) and an unknown id (`KeyError`); **a duplicate answer
+is refused** (`ValueError`, pinned so the doc line stays true); a bare
+`tool_context.interrupt(name, reason)` is published with the default policy; async mode
+publishes from inside the tool with the derived id and the run carries on; a `@wait`
+tool without `@tool(context=True)` is refused at the first call.
+
+
 **Pydantic AI (13 tests, new).** Real `Agent`s with a scripted `FunctionModel`
 (first turn calls the tool, the turn after a tool return echoes it), through
 `agent.run_sync()` and the framework's own deferred-tool machinery: a `@wait` tool parks
@@ -132,12 +162,12 @@ end to end (both modes, every announcer, signed webhook, the answer round trip).
 ### Results
 
 ```
-152 passed, 4 skipped (the e2e level, opt-in)
+161 passed, 4 skipped (the e2e level, opt-in)
 ruff check      clean
 ruff format     clean
-pyright strict  0 errors (src/ — core, langgraph, pydantic_ai, aws)
-coverage        99% (564 statements, 8 missed)
-wheel smoke     ok (bare = core only; three guards; [langgraph,pydantic-ai,aws] full smoke)
+pyright strict  0 errors (src/ — core, langgraph, pydantic_ai, strands, aws)
+coverage        99% (601 statements, 9 missed)
+wheel smoke     ok (bare = core only; four guards; [langgraph,pydantic-ai,strands,aws] full smoke)
 mkdocs --strict ok; every doc snippet parsed and its imports resolved
 ```
 
@@ -181,9 +211,21 @@ directly inside a node. "The model sees pending and says something sensible" nee
 through a scripted `FunctionModel`. "A real model calls the tool, is denied, and says
 something sensible" needs a model.
 
-**Strands.** Designed against, not written.
+**Strands with a real model.** The 12 tests and the smoke section use a scripted
+model. "A real model calls the tool, is refused, and says something sensible" needs a
+model. `S3SessionManager` is not exercised; `FileSessionManager` is, and both implement
+the same `SessionManager` hooks.
 
 ## 7. Deviations
+
+00. **0.7.0 additions.** (a) The tests live in `tests/strands_agents/`, not
+    `tests/strands/`: a directory named `strands` on `sys.path` shadows the real package.
+    (b) The 0.6.0 report said 152 tests; the collected count was 149 (I added instead of
+    counting). Corrected here. (c) Two doc lines were corrected by the tests: a duplicate answer on Strands
+    *raises* (`ValueError`) rather than becoming a stray user message as I first wrote
+    from the source; and a fresh `Agent` on the same session needs a model whose next
+    turn is the *final* one, since the tool call is already in the restored history.
+
 
 0. **0.6.0 additions.** (a) `tests/langgraph/test_hitl.py` → `test_wait_langgraph.py`
    and the new file is `test_wait_pydantic_ai.py`: pytest refuses two `test_wait.py`

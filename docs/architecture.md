@@ -66,8 +66,8 @@ publish_interrupts = make_publish_interrupts(LangGraphFramework())
 That is the whole subpackage. A user never sees the class; they import the bound names.
 The same split holds for announcers: `BaseAnnounce` is the interface, `agent_wait.aws`
 is implementors. Adding a framework or a provider is a subpackage and an extra in
-`pyproject.toml`, and nothing in the core changes — `agent_wait.pydantic_ai` was added
-without touching it. The list of what is supported, and what each framework leaves to the
+`pyproject.toml`, and nothing in the core changes — `agent_wait.pydantic_ai` and
+`agent_wait.strands` were each added without touching it. The list of what is supported, and what each framework leaves to the
 host, is on [Frameworks and providers](frameworks-and-providers.md).
 
 | | LangGraph (`[langgraph]`) | Pydantic AI (`[pydantic-ai]`) |

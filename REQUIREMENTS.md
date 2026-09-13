@@ -810,6 +810,13 @@ the semantics differ (the decorated method always runs; the human reviews its ou
 answer is a string classified by an LLM). Crews and `Flow.ask()` are console-blocking in
 OSS. Not built.
 
-### 23.3 Strands: designed against, not built
+### 23.3 Strands: built in v0.7 (2026-09-13)
 
-Feasible (`tool_context.interrupt`, per-call ids, `result.interrupts`). Not asked for.
+Owner's direction, same condition as Pydantic AI: no change to the core or the
+`Framework` interface — met. `agent_wait.strands` is one class (`interrupt` →
+`tool_context.interrupt("agent_wait", reason=packed)`; `interrupts_in` →
+`result.interrupts` when `stop_reason == "interrupt"`; `current_thread_id` →
+`agent.session_id`) plus the two bindings. What Strands leaves to the host is documented:
+a session manager for durability; duplicate / unknown / plain-prompt-while-parked all
+raise. Tested against 1.55.1 with a scripted model, including a resume from a fresh
+`Agent` on the same `FileSessionManager` session.

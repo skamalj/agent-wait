@@ -1,11 +1,11 @@
 """Prove the *published* package works: run in a clean venv with nothing but PyPI installs.
 
     uv venv .smoke && . .smoke/bin/activate
-    uv pip install "agent-wait[langgraph,pydantic-ai,aws]"
+    uv pip install "agent-wait[langgraph,pydantic-ai,strands,aws]"
     python scripts/smoke_from_pypi.py
 
 Not an import check. Real graphs, both modes, every announcer, the round trip, and the
-same decorator on a Pydantic AI agent.
+same decorator on Pydantic AI and Strands agents.
 Exits non-zero on the first thing that is wrong.
 """
 
@@ -23,6 +23,10 @@ from langgraph.types import Command
 from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, RunContext, ToolApproved
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
+from strands import Agent as StrandsAgent
+from strands import tool as strands_tool
+from strands.models import Model as StrandsModel
+from strands.types.tools import ToolContext
 
 import agent_wait
 from agent_wait import InMemoryAnnounce, WaitPolicy, WebhookAnnounce, verify_signature
@@ -30,6 +34,8 @@ from agent_wait.aws import DynamoDbAnnounce, EventBridgeAnnounce, SnsAnnounce, S
 from agent_wait.langgraph import publish_interrupts, wait
 from agent_wait.pydantic_ai import publish_interrupts as publish_pai
 from agent_wait.pydantic_ai import wait as wait_pai
+from agent_wait.strands import publish_interrupts as publish_strands
+from agent_wait.strands import wait as wait_strands
 
 SECRET = b"smoke"
 PAID: list[str] = []
@@ -146,6 +152,79 @@ def pydantic_ai_section(memory: InMemoryAnnounce) -> None:
     check(done.output == "done: refunded 100" and paid == [100], "approved with edited args, body ran once")
 
 
+class ScriptedStrandsModel(StrandsModel):
+    """First turn: call issue_refund. Next turn: say done."""
+
+    def __init__(self) -> None:
+        self.turn = 0
+
+    def update_config(self, **model_config: Any) -> None:
+        pass
+
+    def get_config(self) -> Any:
+        return {}
+
+    async def structured_output(
+        self, output_model: Any, prompt: Any, system_prompt: Any = None, **kw: Any
+    ) -> Any:
+        yield {}
+
+    async def stream(
+        self, messages: Any, tool_specs: Any = None, system_prompt: Any = None, **kw: Any
+    ) -> Any:
+        yield {"messageStart": {"role": "assistant"}}
+        if self.turn == 0:
+            yield {"contentBlockStart": {"start": {"toolUse": {"name": "issue_refund", "toolUseId": "tu-1"}}}}
+            yield {
+                "contentBlockDelta": {
+                    "delta": {"toolUse": {"input": json.dumps({"order_id": "o-1", "amount": 250})}}
+                }
+            }
+            yield {"contentBlockStop": {}}
+            yield {"messageStop": {"stopReason": "tool_use"}}
+        else:
+            yield {"contentBlockStart": {"start": {}}}
+            yield {"contentBlockDelta": {"delta": {"text": "done"}}}
+            yield {"contentBlockStop": {}}
+            yield {"messageStop": {"stopReason": "end_turn"}}
+        self.turn += 1
+
+
+def strands_section(memory: InMemoryAnnounce) -> None:
+    """The same decorator on a Strands agent: park, publish, approve with edited args."""
+    paid: list[int] = []
+
+    @strands_tool(context=True)
+    @wait_strands(POLICY)
+    def issue_refund(order_id: str, amount: int, tool_context: ToolContext) -> str:
+        paid.append(amount)
+        return f"refunded {amount}"
+
+    print("strands: the same @wait parks a run")
+    agent = StrandsAgent(model=ScriptedStrandsModel(), tools=[issue_refund], callback_handler=None)
+    parked = agent("refund o-1")
+    check(parked.stop_reason == "interrupt" and paid == [], "run stopped on interrupt, body not run")
+    (envelope,) = publish_strands(parked, agent.session_id, [memory])
+    (interrupt,) = parked.interrupts
+    check(envelope.question_id == interrupt.id, "question_id is the interrupt id")
+    check(
+        envelope.question == {"function": "issue_refund", "args": {"order_id": "o-1", "amount": 250}},
+        "tool_context hidden",
+    )
+
+    done = agent(
+        [
+            {
+                "interruptResponse": {
+                    "interruptId": interrupt.id,
+                    "response": {"action": "approve", "args": {"amount": 100}},
+                }
+            }
+        ]
+    )
+    check(done.stop_reason == "end_turn" and paid == [100], "approved with edited args, body ran once")
+
+
 def main() -> None:
     print(f"agent-wait {agent_wait.__version__}  (from {agent_wait.__file__})")
     server = HTTPServer(("127.0.0.1", 0), Handler)
@@ -235,6 +314,7 @@ def main() -> None:
     )
 
     pydantic_ai_section(memory)
+    strands_section(memory)
 
     server.shutdown()
     print("\nsmoke test passed against the installed package")

@@ -43,7 +43,7 @@ your queue, your webhook, or as a row in your table.
 | `type` | string | Always `wait.created`. |
 | `event_id` | ULID | Fresh on every publish. For logs and tracing. **Not** the deduplication key. |
 | `thread_id` | string | The agent's conversation identity. |
-| `question_id` | string | The question's identity. In interrupt mode it is the framework's own id — LangGraph's `Interrupt.id`, Pydantic AI's `tool_call_id`; in async mode it is `sha256(thread_id | function | args)`. Stable across republishes. |
+| `question_id` | string | The question's identity. In interrupt mode it is the framework's own id — LangGraph's `Interrupt.id`, Pydantic AI's `tool_call_id`, Strands' `Interrupt.id`; in async mode it is `sha256(thread_id | function | args)`. Stable across republishes. |
 | `question` | any | From `@wait`: `{"function": name, "args": {...}}`, the call that is waiting. From a bare LangGraph `interrupt(value)`: `value` as is; from a Pydantic AI `requires_approval` or `CallDeferred` tool: `{"function", "args"}` plus any `metadata`. Opaque to every adapter. |
 | `allowed_actions` | string[] | Which answers are meaningful. Advisory. |
 | `expires_at` | RFC 3339 UTC or null | When the asker considers the question stale. Advisory. Measured from publish time unless the caller supplied `asked_at`. |
@@ -173,6 +173,26 @@ The facts differ here, and the host has to code for one of them:
   "anything else is returned in its place" rule is the framework's own.
 - **A `CallDeferred` question** is answered with the call's *result*, in
   `DeferredToolResults.calls={qid: value}`, not `approvals`.
+
+Interrupt mode, Strands — the session manager is the persistence, and the answer goes
+back verbatim:
+
+```python
+agent = Agent(tools=[...], session_manager=FileSessionManager(session_id=message["thread_id"]))
+
+if "question_id" in message:
+    result = agent(
+        [{"interruptResponse": {"interruptId": message["question_id"], "response": message["answer"]}}]
+    )
+else:
+    result = agent(message["input"])
+
+publish_interrupts(result, agent.session_id, announce)
+```
+
+- **A duplicate answer raises** (`ValueError: ... not in interrupt state`); an unknown
+  id raises `KeyError`; a plain prompt to a parked run raises `TypeError`. Nothing runs
+  in any of those cases. Check `result.stop_reason` first, or catch.
 
 Async mode: nothing is parked and nothing is resumed. The decision arrives as a new
 message and the host invokes the agent with it however the agent is designed to react.

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0 — 2026-09-13
+
+**Strands Agents.** `pip install agent-wait[strands]` adds `agent_wait.strands` with the
+same two names, `wait` and `publish_interrupts`, bound to Strands' tool interrupts:
+`@wait` on a `@tool(context=True)` function calls `tool_context.interrupt("agent_wait",
+reason=<packed question>)`; the run stops with `stop_reason == "interrupt"`;
+`publish_interrupts` reads `result.interrupts`; `question_id` is the interrupt id (one
+per tool call). The answer goes back verbatim through
+`agent([{"interruptResponse": {"interruptId": id, "response": answer}}])` and the
+wrapper applies its usual rules. A bare `tool_context.interrupt(...)` from a tool that
+never heard of the library is published with the default policy. Async mode reads
+`agent.session_id`.
+
+No change to the core or the `Framework` interface. The implementor is 40 lines.
+
+Documented per framework: a session manager is what keeps the parked question alive
+between the return and the resume; a duplicate answer, an unknown id, or a plain prompt
+to a parked run all raise and run nothing. Verified against 1.55.1, including resume
+from a fresh `Agent` on the same `FileSessionManager` session.
+
 ## 0.6.0 — 2026-09-12
 
 **Pydantic AI.** `pip install agent-wait[pydantic-ai]` adds `agent_wait.pydantic_ai`

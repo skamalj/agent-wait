@@ -12,8 +12,8 @@ deploy. But the same shape covers a vendor callback, a payment processor, a KYC 
 another agent — anything the run cannot continue without, and nothing inside the process
 can supply.
 
-LangGraph has `interrupt()` for this; Pydantic AI has `ApprovalRequired`. In both, the
-run pauses and the question is handed to whatever called it — and that is where the
+LangGraph has `interrupt()` for this; Pydantic AI has `ApprovalRequired`; Strands has
+`tool_context.interrupt()`. In all of them the run pauses and the question is handed to whatever called it — and that is where the
 framework stops. There is no built-in way to tell anyone *else* that a question was asked,
 and no built-in way for anyone else to answer it. The moment the question has to reach
 Slack, an approvals dashboard, a ticket queue or another service, you are writing that
@@ -27,6 +27,7 @@ it in one envelope, and documents the shape of the answer so the return leg is o
 ```bash
 pip install "agent-wait[langgraph]"        # @wait + publish_interrupts for LangGraph
 pip install "agent-wait[pydantic-ai]"      # the same two names for Pydantic AI
+pip install "agent-wait[strands]"          # ... and for Strands Agents
 pip install "agent-wait[langgraph,aws]"    # + SNS / SQS / EventBridge / DynamoDB announcers
 ```
 
@@ -162,6 +163,40 @@ only if the history you pass already holds the tool's return. `requires_approval
 tools and `CallDeferred` calls (a job handed to an external system) are published too,
 with the default policy.
 
+## The same two names on Strands
+
+```python
+from agent_wait.strands import publish_interrupts, wait
+from strands import Agent, tool
+from strands.session.file_session_manager import FileSessionManager
+from strands.types.tools import ToolContext
+
+
+@tool(context=True)
+@wait(FINANCE)
+def issue_refund(order_id: str, amount: int, tool_context: ToolContext) -> str:
+    payments.refund(order_id, amount)
+    return "refunded"
+
+
+agent = Agent(tools=[issue_refund], session_manager=FileSessionManager(session_id=thread_id))
+result = agent("refund order 4471")
+publish_interrupts(result, agent.session_id, announce=[SnsAnnounce(topic_arn)])
+```
+
+The run stops with `result.stop_reason == "interrupt"`; `question_id` is the interrupt id
+(one per tool call). The answer goes back through the framework's own resume, verbatim:
+
+```python
+agent = Agent(tools=[issue_refund], session_manager=FileSessionManager(session_id=thread_id))
+result = agent([{"interruptResponse": {"interruptId": question_id, "response": answer}}])
+```
+
+Two rules the framework leaves to you: `@tool(context=True)` with the parameter named
+`tool_context`, and a session manager — that is what keeps the parked question alive
+between the return and the resume. A second answer after the run has moved on raises
+(`ValueError`), so a host that may see duplicates checks `stop_reason` first or catches.
+
 ## Async mode — the thread does not park
 
 ```python
@@ -259,14 +294,15 @@ agent_wait              core: WaitPolicy, Question, the envelope, publish(), Bas
                         Webhook/Log/InMemory announcers, and the Framework interface. No deps.
 agent_wait.langgraph    [langgraph]    @wait and publish_interrupts() bound to LangGraph.
 agent_wait.pydantic_ai  [pydantic-ai]  the same two names bound to Pydantic AI's deferred tools.
+agent_wait.strands      [strands]      the same two names bound to Strands' tool_context.interrupt().
 agent_wait.aws          [aws]          SnsAnnounce, SqsAnnounce, EventBridgeAnnounce, DynamoDbAnnounce.
 examples/refund_agent   a graph, a host written for Lambda behind SQS, and its CDK stack.
 docs/                   message contract, architecture, announcer guide, consumer guide.
 ```
 
 `@wait` and `publish_interrupts` are written once against a three-method `Framework`
-interface; `agent_wait.langgraph` and `agent_wait.pydantic_ai` are implementors of it,
-about fifty lines each. Announcers are the same split: `BaseAnnounce` is the interface,
+interface; `agent_wait.langgraph`, `agent_wait.pydantic_ai` and `agent_wait.strands` are
+implementors of it, thirty to fifty lines each. Announcers are the same split: `BaseAnnounce` is the interface,
 each provider subpackage the implementors. See
 [Architecture](https://skamalj.github.io/agent-wait/architecture/).
 
