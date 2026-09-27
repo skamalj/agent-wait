@@ -820,3 +820,33 @@ Owner's direction, same condition as Pydantic AI: no change to the core or the
 a session manager for durability; duplicate / unknown / plain-prompt-while-parked all
 raise. Tested against 1.55.1 with a scripted model, including a resume from a fresh
 `Agent` on the same `FileSessionManager` session.
+
+## 24. v0.8 — `@wait(when=...)` (2026-09-27)
+
+Directed by the owner after the LangGraph demo post exposed the gap: `@wait` parked
+every call, so "over a threshold needs approval" could not live in the decorated
+function. The demo had to use two tools with the model choosing between them, plus a
+guard in the plain tool to stop a mis-route moving money — roughly two hundred words of
+post justifying a limitation of this library.
+
+### 24.1 The predicate
+
+`@wait(policy, when=callable)`. Called with the published `args` as keywords once they
+are bound, before anything is parked or published. False means no question: the body
+runs as an ordinary call, in both `interrupt` and `async` modes.
+
+### 24.2 Three rules, all deliberate
+
+- **It sees the published args only**, never `hidden_params`, so what you branch on is
+  what the approver reads.
+- **It must be deterministic on the same arguments.** The framework re-runs the node on
+  resume, so the predicate is evaluated again; one that answered differently would let
+  the body run without the answer.
+- **It fails closed.** An exception parks the call and is logged on `agent_wait.wait`.
+  A side effect is not skipped because a lambda had a typo.
+
+### 24.3 Scope
+
+Six lines in `make_wait`, so all three frameworks gain it at once. No change to
+`Framework`, the envelope, the answer shape, the announcers or any framework
+subpackage. `__agent_wait__` gains `"conditional"`.

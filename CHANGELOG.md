@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.0 — 2026-09-27
+
+**`@wait(when=...)` — ask only sometimes.** The decorator parked every call to the
+function it decorated, so a threshold ("refunds over 25,000 need finance") had to live
+outside it: two tools with a model choosing between them, or a router node in front.
+Both put the rule somewhere you cannot enforce it, and a model deciding whether an
+approval applies is not a routing mistake, it is an incident.
+
+    @tool
+    @wait(FINANCE, when=lambda order_id, amount: amount > 25_000)
+    def issue_refund(order_id: str, amount: int) -> str: ...
+
+One tool, one rule, in code. Under the threshold the body runs and nothing is published;
+over it, the call parks exactly as before. The predicate sees the published `args` and
+not the framework's injected context; it is re-evaluated when the run resumes, so it has
+to be deterministic on the same arguments; and if it raises, the call parks anyway and
+the exception is logged on `agent_wait.wait`.
+
+Six lines in the core, so all three frameworks get it at once. No change to `Framework`,
+the envelope, the answer shape or any announcer. `__agent_wait__` gains `"conditional"`.
+
 ## 0.7.0 — 2026-09-13
 
 **Strands Agents.** `pip install agent-wait[strands]` adds `agent_wait.strands` with the

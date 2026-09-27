@@ -217,3 +217,43 @@ def test_wait_composes_under_langchain_tool() -> None:
     assert envelope.question == {"function": "send_gift", "args": {"to": "x", "amount": 5}}
     answer(graph, envelope, {"action": "approve"})
     assert CALLS == [("gift", "x", 5)]
+
+
+# ------------------------------------------------------------------ conditional waits
+def test_when_decides_whether_the_graph_parks_at_all() -> None:
+    """One tool, one rule, in code: under the limit it just runs; over it, it asks."""
+    paid: list[int] = []
+
+    @tool
+    @wait(FINANCE, when=lambda order_id, amount: amount > 25_000)
+    def issue_refund(order_id: str, amount: int) -> str:
+        """Refund an order."""
+        paid.append(amount)
+        return f"refunded {amount}"
+
+    def node(state: dict[str, Any]) -> dict[str, Any]:
+        return {"out": issue_refund.invoke({"order_id": state["order_id"], "amount": state["amount"]})}
+
+    graph = StateGraph(dict)
+    graph.add_node("n", node)
+    graph.add_edge(START, "n")
+    graph.add_edge("n", END)
+    app = graph.compile(checkpointer=InMemorySaver())
+
+    small = app.invoke({"order_id": "o-1", "amount": 250}, {"configurable": {"thread_id": "t-small"}})
+    assert small["out"] == "refunded 250"
+    assert publish_interrupts(small, "t-small", [InMemoryAnnounce()]) == []
+    assert paid == [250]
+
+    inbox = InMemoryAnnounce()
+    large = app.invoke({"order_id": "o-2", "amount": 41_000}, {"configurable": {"thread_id": "t-large"}})
+    [envelope] = publish_interrupts(large, "t-large", [inbox])
+    assert envelope.question == {"function": "issue_refund", "args": {"order_id": "o-2", "amount": 41_000}}
+    assert paid == [250]  # still not run
+
+    done = app.invoke(
+        Command(resume={envelope.question_id: {"action": "approve"}}),
+        {"configurable": {"thread_id": "t-large"}},
+    )
+    assert done["out"] == "refunded 41000"
+    assert paid == [250, 41_000]

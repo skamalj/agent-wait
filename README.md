@@ -87,6 +87,24 @@ def review(state, decision=None):
 
 The parameter name is yours — `@wait(FINANCE, decision="verdict")` looks for `verdict`.
 
+**Ask only sometimes.** Most approvals have a threshold, and without a condition the
+decorator parks every call — so the rule ends up somewhere else: two tools with a model
+choosing between them, or a router node in front. Both put the rule where you cannot
+enforce it. `when=` keeps it in the function it belongs to:
+
+```python
+@tool
+@wait(FINANCE, when=lambda order_id, amount: amount > 25_000)
+def issue_refund(order_id: str, amount: int) -> str:
+    payments.refund(order_id, amount)   # under the limit this just runs
+    return "refunded"
+```
+
+One tool, one rule, in code. A model that picks the wrong tool is a routing mistake; a
+model that decides whether an approval applies is an incident. The predicate sees the
+published `args` and not the framework's injected context, it must be deterministic
+because it runs again on resume, and if it raises the call parks anyway.
+
 **After the run** — one call:
 
 ```python

@@ -137,7 +137,12 @@ def test_the_decorated_function_is_tagged(fw: StubFramework) -> None:
     @wait(FINANCE)
     def f() -> None: ...
 
-    assert f.__agent_wait__ == {"framework": "stub", "mode": "interrupt", "policy": FINANCE}  # type: ignore[attr-defined]
+    assert f.__agent_wait__ == {  # type: ignore[attr-defined]
+        "framework": "stub",
+        "mode": "interrupt",
+        "policy": FINANCE,
+        "conditional": False,
+    }
 
 
 # ------------------------------------------------------------------ async mode
@@ -215,3 +220,84 @@ def test_framework_subpackage_import_error_names_the_extra(monkeypatch: pytest.M
     monkeypatch.setattr(builtins, "__import__", no_langgraph)
     with pytest.raises(ImportError, match=r"agent-wait\[langgraph\]"):
         importlib.import_module("agent_wait.langgraph")
+
+
+# ------------------------------------------------------------------ conditional waits
+def test_when_false_runs_the_body_and_asks_nobody(fw: StubFramework) -> None:
+    wait = make_wait(fw)
+
+    @wait(FINANCE, when=lambda order_id, amount: amount > 25_000)
+    def issue_refund(order_id: str, amount: int, ctx: object = None) -> str:
+        return f"refunded {amount}"
+
+    assert issue_refund("o-1", 250) == "refunded 250"  # under the limit: no question
+    assert fw.parked == []
+
+
+def test_when_true_parks_exactly_as_an_unconditional_wait_does(fw: StubFramework) -> None:
+    wait = make_wait(fw)
+
+    @wait(FINANCE, when=lambda order_id, amount: amount > 25_000)
+    def issue_refund(order_id: str, amount: int) -> str:
+        return f"refunded {amount}"
+
+    with pytest.raises(Parked) as parked:
+        issue_refund("o-1", 41_000)
+    question, policy, _ = unpack(parked.value.value)
+    assert question == {"function": "issue_refund", "args": {"order_id": "o-1", "amount": 41_000}}
+    assert policy == FINANCE
+
+
+def test_the_predicate_never_sees_the_frameworks_injected_params(fw: StubFramework) -> None:
+    """`ctx` is in `hidden_params`, so it is not published -- and not passed to `when`."""
+    seen: list[dict[str, Any]] = []
+
+    wait = make_wait(fw)
+
+    @wait(FINANCE, when=lambda **kw: seen.append(kw) or False)
+    def issue_refund(order_id: str, amount: int, ctx: object = None) -> str:
+        return "refunded"
+
+    issue_refund("o-1", 250, ctx=object())
+    assert seen == [{"order_id": "o-1", "amount": 250}]
+
+
+def test_a_predicate_that_raises_asks_anyway(fw: StubFramework) -> None:
+    """Fail closed: a broken `when` must not let the body run unasked."""
+    wait = make_wait(fw)
+
+    @wait(FINANCE, when=lambda **kw: kw["nonexistent"] > 1)
+    def issue_refund(order_id: str, amount: int) -> str:
+        return "refunded"
+
+    with pytest.raises(Parked):
+        issue_refund("o-1", 250)
+
+
+def test_when_applies_in_async_mode_too(fw: StubFramework) -> None:
+    wait = make_wait(fw)
+    inbox = InMemoryAnnounce()
+
+    @wait(FINANCE, mode="async", announce=[inbox], when=lambda amount: amount > 25_000)
+    def issue_refund(amount: int) -> str:
+        return f"refunded {amount}"
+
+    assert issue_refund(250) == "refunded 250"  # under the limit: nothing published
+    assert inbox.events == []
+
+    result = issue_refund(41_000)
+    assert result["status"] == "pending_approval"
+    assert len(inbox.of("created")) == 1
+
+
+def test_the_tag_records_whether_the_wait_is_conditional(fw: StubFramework) -> None:
+    wait = make_wait(fw)
+
+    @wait(FINANCE)
+    def always() -> None: ...
+
+    @wait(FINANCE, when=lambda: True)
+    def sometimes() -> None: ...
+
+    assert always.__agent_wait__["conditional"] is False  # type: ignore[attr-defined]
+    assert sometimes.__agent_wait__["conditional"] is True  # type: ignore[attr-defined]

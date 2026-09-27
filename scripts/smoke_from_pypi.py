@@ -313,6 +313,29 @@ def main() -> None:
         "decorator published it",
     )
 
+    print("when=: the threshold decides whether anyone is asked")
+    asked: list[int] = []
+
+    @wait(POLICY, when=lambda amount: amount > 1000)
+    def conditional_refund(amount: int) -> str:
+        asked.append(amount)
+        return f"refunded {amount}"
+
+    g = StateGraph(State)
+    g.add_node("pay", lambda s: {"status": conditional_refund(s["amount"])})
+    g.add_edge(START, "pay")
+    g.add_edge("pay", END)
+    cond = g.compile(checkpointer=InMemorySaver())
+
+    small = cond.invoke({"amount": 50}, cfg("w-small"))
+    check(publish_interrupts(small, "w-small", [memory]) == [], "under the threshold: no question")
+    check(asked == [50], "under the threshold: the body ran")
+
+    big = cond.invoke({"amount": 5000}, cfg("w-big"))
+    (env,) = publish_interrupts(big, "w-big", [memory])
+    check(env.question["args"] == {"amount": 5000}, "over the threshold: parked and published")
+    check(asked == [50], "over the threshold: the body did not run")
+
     pydantic_ai_section(memory)
     strands_section(memory)
 

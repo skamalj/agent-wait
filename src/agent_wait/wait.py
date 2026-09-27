@@ -33,6 +33,33 @@ the answer:
     def review(state, decision=None):
         return {"decision": decision}
 
+## `when=` -- ask only sometimes
+
+Most approvals have a threshold: small refunds go through, large ones need a human.
+Without `when=`, `@wait` parks *every* call, so that rule has to live somewhere else --
+two tools and a model choosing between them, or a router node in front. Both put the
+rule where you cannot enforce it.
+
+    @tool
+    @wait(FINANCE, when=lambda order_id, amount: amount > 25_000)
+    def issue_refund(order_id: str, amount: int) -> str:
+        payments.refund(order_id, amount)
+        return "refunded"
+
+One tool. Under the limit the body runs and nobody is asked; over it, the call parks
+exactly as an unconditional `@wait` would. The threshold is in code, in one place, and
+no model decides whether it applies.
+
+Three things about the predicate:
+
+* **It sees what the approver sees** -- the published `args`, not the framework's
+  injected context. What you branch on is what the question shows.
+* **It must be deterministic on the same arguments.** The framework re-runs the node
+  from the top when the answer comes back, so `when` is called again. One that answered
+  differently the second time would let the body run without the answer.
+* **If it raises, the call parks anyway.** A refund is not skipped because a lambda had
+  a typo. The exception is logged on `agent_wait.wait`.
+
 ## `mode="async"` -- the run does not park
 
     @tool
@@ -62,6 +89,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import inspect
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, cast
 
@@ -72,6 +100,8 @@ from .policy import WaitPolicy
 from .publish import publish
 
 Mode = Literal["interrupt", "async"]
+
+_log = logging.getLogger("agent_wait.wait")
 
 WAIT_KEY = "__wait__"
 SOURCE_KEY = "__source__"
@@ -115,6 +145,27 @@ def question_id_for(thread_id: str, function: str, args: Mapping[str, Any]) -> s
 
 
 # ------------------------------------------------------------------ the decorator
+
+
+def _asks(when: Callable[..., bool], visible: Mapping[str, Any], function: str) -> bool:
+    """Does this call need a question? `when` decides, and a broken `when` says yes.
+
+    The predicate sees exactly the arguments the approver would see -- not the
+    framework's injected context -- so what you branch on is what gets published.
+
+    It is called again when the run resumes, because the framework re-runs the node
+    from the top. A predicate that answers differently the second time would let the
+    body run without the answer, so it has to be deterministic on the same arguments.
+
+    If it raises, we ask. A refund is not skipped because a lambda had a typo.
+    """
+    try:
+        return bool(when(**visible))
+    except Exception:
+        _log.warning("@wait(when=...) on %s raised; asking anyway", function, exc_info=True)
+        return True
+
+
 def make_wait(framework: Framework) -> Callable[..., Callable[[Callable[..., Any]], Callable[..., Any]]]:
     """Build the `@wait` decorator for one framework."""
 
@@ -124,6 +175,7 @@ def make_wait(framework: Framework) -> Callable[..., Callable[[Callable[..., Any
         mode: Mode = "interrupt",
         announce: Sequence[AnnounceAdapter] | None = None,
         decision: str = "decision",
+        when: Callable[..., bool] | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         resolved = policy or WaitPolicy(allowed_actions=("approve", "reject"))
         if mode == "async" and not announce:
@@ -145,6 +197,10 @@ def make_wait(framework: Framework) -> Callable[..., Callable[[Callable[..., Any
                 bound.apply_defaults()
                 call_args: dict[str, Any] = dict(bound.arguments)
                 visible = {k: v for k, v in call_args.items() if k not in hidden}
+
+                if when is not None and not _asks(when, visible, name):
+                    return fn(**call_args)
+
                 question = {"function": name, "args": visible}
 
                 if mode == "async":
@@ -163,7 +219,12 @@ def make_wait(framework: Framework) -> Callable[..., Callable[[Callable[..., Any
                     return fn(**{**passthrough, **edited})
                 return answer
 
-            wrapper.__agent_wait__ = {"framework": framework.name, "mode": mode, "policy": resolved}  # type: ignore[attr-defined]
+            wrapper.__agent_wait__ = {  # type: ignore[attr-defined]
+                "framework": framework.name,
+                "mode": mode,
+                "policy": resolved,
+                "conditional": when is not None,
+            }
             return wrapper
 
         return decorate

@@ -107,7 +107,10 @@ intercepts interrupts twice. It is one or the other, and this library is the oth
 ## The two modes of `@wait`
 
 **Interrupt** (default): the wrapper raises the interrupt with `{"function", "args"}`
-before the body. The thread parks. `publish_interrupts` after the run announces it. If
+before the body — unless `when=` is given and returns false for these arguments, in which
+case no question is raised at all and the body simply runs. The predicate sees the
+published `args` only, is re-evaluated on the resume re-run (so it must be deterministic),
+and parks the call if it raises. The thread parks. `publish_interrupts` after the run announces it. If
 the function declares a `decision` parameter it always runs and receives the answer;
 otherwise `{"action": "approve"}` runs it, `{"action": "approve", "args": {…}}` runs it
 with those, and anything else is returned in its place, unexecuted.

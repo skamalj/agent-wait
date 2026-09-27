@@ -50,6 +50,8 @@ your queue, your webhook, or as a row in your table.
 | `default` | any or null | What the asker said to assume if nobody answers. Advisory. |
 | `answer_ttl` | ISO 8601 duration or null | How long an answer stays usable after it is given. Advisory. |
 | `source` | object or null | `{"function": name}` for a `@wait` question; null for a bare interrupt. |
+
+A `@wait(when=...)` call that the predicate skips publishes nothing at all — there is no question, so there is no envelope.
 | `reply_to` | object or null | A hint for where to send the answer, if the host chose to publish one. Null otherwise. |
 | `reply_with` | object | A filled-in reply. Copy it, set `answer`, send it to the agent's entry point. |
 | `correlation` | object or null | `{"provider": ..., "id": ...}` when the question is tied to an external job. |
