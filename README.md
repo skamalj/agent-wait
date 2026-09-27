@@ -96,7 +96,7 @@ enforce it. `when=` keeps it in the function it belongs to:
 @tool
 @wait(FINANCE, when=lambda order_id, amount: amount > 25_000)
 def issue_refund(order_id: str, amount: int) -> str:
-    payments.refund(order_id, amount)   # under the limit this just runs
+    payments.refund(order_id, amount)  # under the limit this just runs
     return "refunded"
 ```
 
